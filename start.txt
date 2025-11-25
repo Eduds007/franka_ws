@@ -1,0 +1,3 @@
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
+
+cd /home/nuc_6g_life_3/franka_ws && ls -la install/franka_position_reader_cpp/lib/franka_position_reader_cpp/
