@@ -1,0 +1,19 @@
+# Service definition for starting slide along cable primitive
+
+# Request
+geometry_msgs/Pose start_pose        # Initial gripper pose
+geometry_msgs/Pose end_pose          # Final gripper pose  
+float32 desired_tension              # Desired cable tension (N)
+float32 slide_velocity              # Desired sliding velocity (m/s)
+float32 max_tension_limit           # Maximum allowed tension (N) 
+float32 position_tolerance          # Position accuracy (m)
+float32 tension_tolerance           # Tension accuracy (N)
+string stop_criterion               # "position", "tension", or "both"
+
+---
+
+# Response  
+bool success                        # Service call success
+string message                      # Status or error message
+uint32 estimated_duration          # Estimated execution time (seconds)
+float32 trajectory_distance         # Total trajectory distance (m)

@@ -1,0 +1,144 @@
+# Slide Along Cable Primitive Configuration
+
+# Control Parameters
+slide_primitive:
+  ros__parameters:
+    # Control loop frequency (Hz)
+    control_frequency: 125.0
+    
+    # Feedback publishing frequency (Hz) 
+    feedback_frequency: 10.0
+    
+    # Trajectory generation
+    trajectory_interpolation_points: 100
+    velocity_smoothing_factor: 0.9  # 0.0 = no smoothing, 1.0 = maximum smoothing
+    
+    # Safety limits
+    max_execution_time: 60.0  # seconds
+    safety_tension_multiplier: 1.5  # Emergency stop if tension > desired * multiplier
+    emergency_stop_acceleration: 0.5  # m/s² for controlled emergency stop
+    
+    # Default movement parameters
+    default_slide_velocity: 0.05  # m/s (5 cm/s)
+    default_desired_tension: 5.0  # N
+    default_position_tolerance: 0.005  # m (5 mm)
+    default_tension_tolerance: 0.5  # N
+    default_stop_criterion: "both"  # "position", "tension", or "both"
+    
+    # Velocity limits
+    max_linear_velocity: 0.2   # m/s
+    max_angular_velocity: 0.5  # rad/s
+    
+    # Acceleration limits for smoothing
+    max_linear_acceleration: [0.5, 0.5, 0.5]    # [x, y, z] m/s²
+    max_angular_acceleration: [1.0, 1.0, 1.0]   # [rx, ry, rz] rad/s²
+    
+    # Controller gains for trajectory following
+    position_controller_gains: [2.0, 2.0, 2.0]  # [kp_x, kp_y, kp_z]
+    orientation_controller_gains: [1.0, 1.0, 1.0]  # [kp_rx, kp_ry, kp_rz]
+
+# Admittance Controller Configuration for Cable Sliding
+admittance_controller_cable:
+  ros__parameters:
+    control_frequency: 125.0
+    
+    # Mass matrix (diagonal) - Lower for more responsive cable sliding
+    mass_matrix: [8.0, 8.0, 12.0, 0.8, 0.8, 0.8]  # [mx, my, mz, mrx, mry, mrz]
+    
+    # Damping matrix (diagonal) - Higher for cable stability
+    damping_matrix: [40.0, 40.0, 60.0, 4.0, 4.0, 4.0]  # [bx, by, bz, brx, bry, brz]
+    
+    # Stiffness matrix (diagonal) - Moderate for cable compliance
+    stiffness_matrix: [80.0, 80.0, 120.0, 8.0, 8.0, 8.0]  # [kx, ky, kz, krx, kry, krz]
+    
+    # Desired forces/moments for cable tension control
+    desired_force: [0.0, 0.0, 5.0, 0.0, 0.0, 0.0]  # [fx, fy, fz, mx, my, mz] - tension in Z
+    
+    # Safety and performance limits
+    force_deadzone: 0.1      # N - ignore forces below this threshold
+    velocity_limit: 0.15     # m/s - maximum output velocity
+    force_limit: 50.0        # N - maximum force before emergency stop
+    
+    # Auto-activation (will be controlled by primitive)
+    auto_activate: false
+
+# Cable Properties Configuration
+cable_properties:
+  ros__parameters:
+    # Physical properties
+    cable_diameter: 0.005     # m (5 mm)
+    cable_material: "steel"   # Material type for stiffness estimation
+    cable_length: 2.0         # m - total cable length
+    cable_mass_per_meter: 0.1 # kg/m
+    
+    # Mechanical properties
+    young_modulus: 200000000000.0  # Pa (200 GPa for steel)
+    breaking_strength: 1000.0      # N
+    safe_working_load: 200.0       # N (20% of breaking strength)
+    
+    # Friction properties
+    static_friction_coefficient: 0.3
+    kinetic_friction_coefficient: 0.25
+    
+    # Grip properties
+    gripper_contact_area: 0.0001   # m² (1 cm²)
+    grip_pressure: 50000.0         # Pa (50 kPa)
+
+# Demo Movement Presets
+demo_movements:
+  ros__parameters:
+    # Movement 1: Horizontal cable inspection
+    horizontal_inspection:
+      start_position: [0.5, -0.2, 0.4]
+      end_position: [0.5, 0.2, 0.4]
+      tension: 4.0
+      velocity: 0.03
+      stop_criterion: "position"
+    
+    # Movement 2: Vertical cable descent
+    vertical_descent:
+      start_position: [0.6, 0.0, 0.5]
+      end_position: [0.6, 0.0, 0.2]
+      tension: 6.0
+      velocity: 0.02
+      stop_criterion: "both"
+    
+    # Movement 3: Precision positioning
+    precision_positioning:
+      start_position: [0.55, 0.05, 0.35]
+      end_position: [0.57, 0.03, 0.33]
+      tension: 3.5
+      velocity: 0.01
+      stop_criterion: "position"
+      position_tolerance: 0.002  # 2 mm precision
+    
+    # Movement 4: Curved path following
+    curved_path:
+      waypoints: [
+        [0.4, 0.0, 0.4],
+        [0.5, 0.1, 0.35], 
+        [0.6, 0.0, 0.3],
+        [0.7, -0.1, 0.25]
+      ]
+      tension: 5.5
+      velocity: 0.025
+      stop_criterion: "both"
+
+# Tactile Sensor Integration
+tactile_integration:
+  ros__parameters:
+    # Force estimation parameters
+    force_scaling_factor: 1.0
+    force_offset: [0.0, 0.0, 0.0]  # [fx, fy, fz] offset compensation
+    
+    # Filtering parameters  
+    force_filter_cutoff: 10.0     # Hz - low-pass filter for force signals
+    force_moving_average_size: 5  # samples for moving average
+    
+    # Cable tension detection
+    tension_direction_threshold: 0.8  # Minimum Z-component for valid tension
+    grip_force_minimum: 1.0          # N - minimum grip force to detect cable
+    
+    # Safety monitoring
+    grip_loss_threshold: 0.5         # N - below this, assume cable lost
+    excessive_force_threshold: 15.0   # N - above this, stop movement

@@ -1,0 +1,23 @@
+# Goal definition for SlideAlongCable action
+geometry_msgs/Pose start_pose        # Initial gripper pose
+geometry_msgs/Pose end_pose          # Final gripper pose  
+float32 desired_tension              # Desired cable tension (N)
+float32 slide_velocity              # Desired sliding velocity (m/s)
+float32 max_tension_limit           # Maximum allowed tension (N)
+float32 position_tolerance          # Position accuracy (m)
+float32 tension_tolerance           # Tension accuracy (N)
+string stop_criterion               # "position", "tension", or "both"
+---
+# Result definition
+bool success                        # Execution success
+geometry_msgs/Pose final_pose       # Final achieved pose
+float32 final_tension              # Final achieved tension (N)
+float32 execution_time             # Total execution time (s)
+string error_message               # Error description if failed
+---
+# Feedback definition
+geometry_msgs/Pose current_pose     # Current gripper pose
+float32 current_tension            # Current cable tension (N)
+float32 progress_percentage        # Completion percentage (0-100)
+float32 distance_remaining         # Distance to target (m)
+string status_message              # Current status description

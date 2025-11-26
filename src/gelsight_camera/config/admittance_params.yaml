@@ -1,0 +1,32 @@
+# Admittance Controller Configuration
+admittance_controller:
+  ros__parameters:
+    # Control parameters
+    control_frequency: 125.0          # Hz - matching Franka control frequency
+    desired_force_z: 5.0             # N - desired normal force (cable tension)
+    force_tolerance: 0.5             # N - acceptable force error
+    
+    # Admittance parameters - tuned for cable tension control
+    # Mass matrix (virtual inertia) - lower values = more responsive
+    mass_x: 0.5                      # kg - lateral mass
+    mass_y: 0.5                      # kg - lateral mass  
+    mass_z: 1.0                      # kg - normal mass (main control axis)
+    
+    # Damping matrix (virtual damping) - higher values = more stable
+    damping_x: 20.0                  # Ns/m - lateral damping
+    damping_y: 20.0                  # Ns/m - lateral damping
+    damping_z: 50.0                  # Ns/m - normal damping (main control)
+    
+    # Stiffness matrix (virtual stiffness) - higher values = stiffer response
+    stiffness_x: 50.0                # N/m - lateral stiffness
+    stiffness_y: 50.0                # N/m - lateral stiffness
+    stiffness_z: 100.0               # N/m - normal stiffness (main control)
+    
+    # Safety limits
+    max_linear_velocity: 0.05        # m/s - maximum velocity (conservative for cable handling)
+    max_angular_velocity: 0.1        # rad/s - maximum angular velocity
+    max_linear_acceleration: 0.2     # m/s² - maximum acceleration
+    
+    # Control modes
+    control_mode: "velocity_based"    # "velocity_based" or "position_based"
+    enable_trajectory_following: true # Enable trajectory tracking integration

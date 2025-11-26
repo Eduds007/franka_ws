@@ -1,0 +1,19 @@
+# Tactile Sensor Node Configuration
+tactile_sensor_node:
+  ros__parameters:
+    # Processing frame rate (Hz)
+    frame_rate: 30.0
+    
+    # Force estimation parameters
+    force_scaling_factor: 150.0      # N per mm of depth (calibration dependent)
+    gel_stiffness: 2000.0            # N/m (estimated gel stiffness)
+    
+    # GelSight Mini physical parameters
+    mm_per_pixel: 0.0634             # Resolution from GelSight documentation
+    
+    # Image processing parameters
+    contact_threshold: 25            # Pixel intensity threshold for contact detection
+    gaussian_blur_kernel: 5          # Gaussian blur kernel size (must be odd)
+    
+    # Debug and visualization
+    enable_debug_images: true        # Publish debug visualization images

@@ -1,0 +1,14 @@
+# Service definition for stopping slide along cable primitive
+
+# Request
+bool emergency_stop                 # True for emergency stop, false for normal stop
+string reason                       # Reason for stopping (optional)
+
+---
+
+# Response
+bool success                        # Service call success  
+string message                      # Status message
+float32 execution_time              # Actual execution time before stop (seconds)
+geometry_msgs/Pose final_pose       # Final achieved pose
+float32 final_tension              # Final achieved tension (N)

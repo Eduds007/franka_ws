@@ -1,0 +1,30 @@
+# GelSight Cameras Configuration
+gelsight_left_camera_node:
+  ros__parameters:
+    # Camera device ID (usually 0 for first USB camera)
+    camera_id: 0
+    
+    # Publishing frame rate (Hz)
+    frame_rate: 30.0
+    
+    # Camera side ("left" or "right")
+    camera_side: "left"
+    
+    # Image dimensions
+    image_width: 640
+    image_height: 480
+
+gelsight_right_camera_node:
+  ros__parameters:
+    # Camera device ID (usually 1 for second USB camera)
+    camera_id: 1
+    
+    # Publishing frame rate (Hz)
+    frame_rate: 30.0
+    
+    # Camera side ("left" or "right")
+    camera_side: "right"
+    
+    # Image dimensions
+    image_width: 640
+    image_height: 480
