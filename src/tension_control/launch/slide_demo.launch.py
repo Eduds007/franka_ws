@@ -9,7 +9,7 @@ def generate_launch_description():
     
     # Demo client node
     demo_client_node = Node(
-        package='gelsight_camera',
+        package='tension_control',
         executable='slide_cable_client.py',
         name='slide_cable_demo_client',
         output='screen',
@@ -17,7 +17,7 @@ def generate_launch_description():
     
     # Admittance controller  
     admittance_controller_node = Node(
-        package='gelsight_camera',
+        package='tension_control',
         executable='admittance_controller',
         name='admittance_controller_for_primitive',
         output='screen',

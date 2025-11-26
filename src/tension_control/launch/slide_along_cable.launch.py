@@ -63,7 +63,7 @@ def generate_launch_description():
     
     # Slide along cable primitive node
     slide_primitive_node = Node(
-        package='gelsight_camera',
+        package='tension_control',
         executable='slide_along_cable_primitive.py',
         name='slide_along_cable_primitive',
         output='screen',
@@ -88,7 +88,7 @@ def generate_launch_description():
     
     # Demo client node (optional)
     demo_client_node = Node(
-        package='gelsight_camera',
+        package='tension_control',
         executable='slide_cable_client.py',
         name='slide_cable_demo_client',
         output='screen',
@@ -101,7 +101,7 @@ def generate_launch_description():
     
     # Admittance controller (if not already running)
     admittance_controller_node = Node(
-        package='gelsight_camera',
+        package='tension_control',
         executable='admittance_controller',
         name='admittance_controller_for_primitive',
         output='screen',

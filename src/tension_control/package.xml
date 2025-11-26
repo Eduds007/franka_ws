@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>gelsight_camera</name>
+  <name>tension_control</name>
   <version>1.0.0</version>
-  <description>ROS2 package for GelSight camera streaming</description>
+  <description>ROS2 package for advanced cable tension control with tactile feedback and admittance control</description>
   <maintainer email="eduardo@example.com">Eduardo</maintainer>
   <license>Apache-2.0</license>
 
