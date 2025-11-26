@@ -48,7 +48,6 @@ devel/
 /tmp/
 
 # Test results
-*.xml
 *.log
 
 # Backup files
