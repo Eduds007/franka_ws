@@ -1,3 +1,49 @@
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
 
 cd /home/nuc_6g_life_3/franka_ws && ls -la install/franka_position_reader_cpp/lib/franka_position_reader_cpp/
+
+gripping position
+name:
+- panda_joint1
+- panda_joint2
+- panda_joint3
+- panda_joint4
+- panda_joint6
+- panda_joint7
+- panda_joint5
+position:
+- 0.02542098999620014
+- 0.7414072381662683
+- 0.019936763503084078
+- -1.4321628188321502
+- 2.175834281696958
+- -0.7388884545018181
+- -0.05840168118070459
+
+homing position
+std::array<double, 7> q_goal = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
+
+
+Se controlador näo iniciar 
+
+# 1. Reiniciar o Franka controller
+ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
+
+# 2. Carregar o joint trajectory controller
+ros2 control load_controller joint_trajectory_controller
+
+# 3. Configurar e ativar o controller
+ros2 run controller_manager spawner joint_trajectory_controller
+
+Evitar problemas no futuro
+
+# Terminal 1: Iniciar o Franka controller
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
+
+# Terminal 2: Aguardar e ativar o joint trajectory controller
+sleep 10 && ros2 run controller_manager spawner joint_trajectory_controller
+
+# Terminal 3: Executar move_homing
+ros2 run tension_control move_homing
+
+./src/tension_control/scripts/homing_routine_auto.sh
