@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Simple Tactile Detection Demo (No Cameras Required) -->
+  
+  <!-- Arguments -->
+  <arg name="demo_mode" default="simple" description="Demo mode: simple or advanced"/>
+  
+  <!-- Simple Demo (no cameras needed) -->
+  <node pkg="tension_control" exec="simple_tactile_demo.py" 
+        name="simple_tactile_demo" output="screen" if="$(eval '\'$(var demo_mode)\' == \'simple\'')">
+  </node>
+
+  <!-- Advanced Demo (with simulated cameras) -->
+  <node pkg="tension_control" exec="tactile_object_detector.py" 
+        name="tactile_object_detector" output="screen" if="$(eval '\'$(var demo_mode)\' == \'advanced\'')">
+  </node>
+
+</launch>

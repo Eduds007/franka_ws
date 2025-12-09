@@ -1,0 +1,77 @@
+# Integrated Tension Control with Tactile Feedback Configuration
+# This file contains parameters for the complete integrated system
+
+# Tactile Detection Parameters
+tactile_detection:
+  ros__parameters:
+    detection_threshold: 0.3
+    background_learn_frames: 20
+    adaptive_grip_enabled: true
+    min_grip_force: 5.0
+    max_grip_force: 30.0
+    camera1_topic: "/gelsight_cam1/image_raw"
+    camera2_topic: "/gelsight_cam2/image_raw"
+    detection_frequency: 10.0
+    background_learn_timeout: 10.0
+    morph_kernel_size: 3
+    morph_iterations: 2
+    publish_debug_images: false
+    log_frequency: 2.0
+
+# Integrated Tension Controller Parameters
+tension_control_tactile:
+  ros__parameters:
+    enable_tactile_feedback: true
+    auto_grip_adjustment: true
+    tension_threshold: 5.0          # Force threshold in Newtons
+    grip_adjustment_rate: 0.5       # Hz - Rate of grip adjustments
+    safety_grip_limit: 50.0         # Maximum allowed grip force
+    monitoring_frequency: 20.0      # Hz - Control loop frequency
+    
+    # Safety parameters
+    tactile_timeout: 5.0           # Seconds - Max time without tactile feedback
+    force_limit_check: true        # Enable force limit checking
+    emergency_grip_release: true   # Auto-release on emergency
+    
+    # Control behavior
+    gentle_mode_threshold: 0.7     # Confidence threshold for gentle mode
+    firm_grip_confidence: 0.3      # Confidence below which to use firm grip
+    grip_adjustment_step: 0.1      # Fraction of target force change per step
+    
+    # State machine timing
+    state_transition_delay: 0.5    # Seconds between state checks
+    background_learn_timeout: 10.0 # Max time to wait for background learning
+
+# Camera Node Parameters (if using built-in camera nodes)
+gelsight_cam1:
+  ros__parameters:
+    camera_index: 0
+    camera_name: "gelsight_cam1"
+    width: 640
+    height: 480
+    fps: 30
+    auto_exposure: false
+    exposure: 100
+    gain: 50
+
+gelsight_cam2:
+  ros__parameters:
+    camera_index: 1
+    camera_name: "gelsight_cam2"  
+    width: 640
+    height: 480
+    fps: 30
+    auto_exposure: false
+    exposure: 100
+    gain: 50
+
+# Gripper Controller Parameters
+gripper_control:
+  ros__parameters:
+    action_server: "/panda_gripper/gripper_action"
+    default_grip_force: 20.0
+    open_position: 0.08
+    close_position: 0.0
+    position_tolerance: 0.005
+    force_tolerance: 2.0
+    command_timeout: 5.0

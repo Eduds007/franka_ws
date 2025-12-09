@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Camera Publisher Node -->
+  <node pkg="tension_control" exec="camera_publisher.py" name="camera_publisher" output="screen">
+    <param name="camera1_id" value="1"/>
+    <param name="camera2_id" value="3"/>
+    <param name="fps" value="30.0"/>
+    <param name="width" value="640"/>
+    <param name="height" value="480"/>
+  </node>
+  
+  <!-- Camera Viewer Node -->
+  <node pkg="tension_control" exec="camera_viewer.py" name="camera_viewer" output="screen"/>
+</launch>

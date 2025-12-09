@@ -1,0 +1,27 @@
+# Tactile Object Detection Configuration
+# This file contains parameters for the tactile object detection system
+
+# Detection Parameters
+detection_threshold: 0.3          # Sensitivity threshold (0.1-1.0, lower = more sensitive)
+background_learn_frames: 20       # Number of frames to learn background
+adaptive_grip_enabled: true       # Enable adaptive grip force based on detection confidence
+
+# Grip Force Parameters
+min_grip_force: 5.0               # Minimum grip force (N)
+max_grip_force: 30.0              # Maximum grip force (N)
+
+# Camera Topics
+camera1_topic: "/gelsight_cam1/image_raw"
+camera2_topic: "/gelsight_cam2/image_raw"
+
+# Processing Parameters
+detection_frequency: 10.0         # Detection processing frequency (Hz)
+background_learn_timeout: 10.0    # Timeout for background learning (seconds)
+
+# Morphological Operations
+morph_kernel_size: 3              # Size of morphological kernel
+morph_iterations: 2               # Number of morphological iterations
+
+# Publishing
+publish_debug_images: false       # Publish debug images (for visualization)
+log_frequency: 2.0               # Status logging frequency (seconds)

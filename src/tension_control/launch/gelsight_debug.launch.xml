@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- GelSight Object Detection with Debug Logging -->
+  
+  <!-- Camera Publisher Node -->
+  <node pkg="tension_control" exec="camera_publisher.py" name="camera_publisher" output="screen">
+    <param name="camera1_id" value="1"/>
+    <param name="camera2_id" value="3"/>
+    <param name="fps" value="30.0"/>
+    <param name="width" value="640"/>
+    <param name="height" value="480"/>
+  </node>
+  
+  <!-- GelSight Object Detection with Enhanced Logging -->
+  <node pkg="tension_control" exec="gelsight_detector_debug.py" name="gelsight_detector_debug" output="screen">
+    <param name="detection_threshold" value="0.15"/>
+    <param name="reference_frames" value="10"/>
+    <param name="marker_detection_threshold" value="30"/>
+    <param name="min_marker_area" value="50"/>
+    <param name="max_marker_area" value="500"/>
+    <param name="deformation_threshold" value="0.2"/>
+  </node>
+  
+</launch>

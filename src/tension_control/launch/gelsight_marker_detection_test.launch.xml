@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- GelSight Marker-based Object Detection Test Launch -->
+  
+  <!-- Camera Publisher Node (using our working configuration) -->
+  <node pkg="tension_control" exec="camera_publisher.py" name="camera_publisher" output="screen">
+    <param name="camera1_id" value="1"/>
+    <param name="camera2_id" value="3"/>
+    <param name="fps" value="30.0"/>
+    <param name="width" value="640"/>
+    <param name="height" value="480"/>
+  </node>
+  
+  <!-- GelSight Marker Object Detection -->
+  <node pkg="tension_control" exec="gelsight_marker_detector.py" name="gelsight_marker_detector" output="screen">
+    <param name="detection_threshold" value="3.0"/>
+    <param name="min_displaced_markers" value="3"/>
+    <param name="reference_frames" value="15"/>
+    <param name="tracking_quality_threshold" value="0.7"/>
+  </node>
+  
+  <!-- Camera Viewer (optional) -->
+  <node pkg="tension_control" exec="camera_viewer.py" name="camera_viewer" output="screen"/>
+  
+</launch>

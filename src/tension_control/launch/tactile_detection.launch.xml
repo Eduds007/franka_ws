@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Tactile Object Detection Launch File -->
+  
+  <!-- Parameters -->
+  <arg name="detection_threshold" default="0.3" description="Detection sensitivity threshold"/>
+  <arg name="adaptive_grip" default="true" description="Enable adaptive grip force"/>
+  <arg name="min_grip_force" default="5.0" description="Minimum grip force in Newtons"/>
+  <arg name="max_grip_force" default="30.0" description="Maximum grip force in Newtons"/>
+  <arg name="camera1_topic" default="/gelsight_cam1/image_raw" description="Camera 1 topic"/>
+  <arg name="camera2_topic" default="/gelsight_cam2/image_raw" description="Camera 2 topic"/>
+  <arg name="config_file" default="$(find-pkg-share tension_control)/config/tactile_detection_params.yaml" description="Configuration file"/>
+  
+  <!-- Tactile Object Detection Service Node -->
+  <node pkg="tension_control" exec="tactile_detection_service.py" name="tactile_detection_service" output="screen">
+    <param name="detection_threshold" value="$(var detection_threshold)"/>
+    <param name="adaptive_grip_enabled" value="$(var adaptive_grip)"/>
+    <param name="min_grip_force" value="$(var min_grip_force)"/>
+    <param name="max_grip_force" value="$(var max_grip_force)"/>
+    <param name="camera1_topic" value="$(var camera1_topic)"/>
+    <param name="camera2_topic" value="$(var camera2_topic)"/>
+    <param name="background_learn_frames" value="20"/>
+    <remap from="/tension_control/object_detected" to="/tension_control/object_detected"/>
+    <remap from="/tension_control/object_confidence" to="/tension_control/object_confidence"/>
+    <remap from="/tension_control/recommended_grip_force" to="/tension_control/recommended_grip_force"/>
+    <remap from="/tension_control/detection_status" to="/tension_control/detection_status"/>
+    <remap from="/tension_control/object_location" to="/tension_control/object_location"/>
+  </node>
+
+  <!-- Optional: Tactile Object Detection with GUI -->
+  <arg name="enable_gui" default="false" description="Enable GUI for object detection"/>
+  <node pkg="tension_control" exec="tactile_object_detector.py" name="tactile_object_detector_gui" 
+        output="screen" if="$(var enable_gui)">
+    <param name="detection_threshold" value="$(var detection_threshold)"/>
+    <param name="adaptive_grip_enabled" value="$(var adaptive_grip)"/>
+    <param name="min_grip_force" value="$(var min_grip_force)"/>
+    <param name="max_grip_force" value="$(var max_grip_force)"/>
+  </node>
+
+  <!-- GelSight Camera Nodes (if not already running) -->
+  <arg name="start_cameras" default="false" description="Start GelSight camera nodes"/>
+  <node pkg="tension_control" exec="gelsight_camera_node" name="gelsight_cam1" 
+        output="screen" if="$(var start_cameras)">
+    <param name="camera_index" value="0"/>
+    <param name="camera_name" value="gelsight_cam1"/>
+    <remap from="image_raw" to="/gelsight_cam1/image_raw"/>
+  </node>
+  
+  <node pkg="tension_control" exec="gelsight_camera_node" name="gelsight_cam2" 
+        output="screen" if="$(var start_cameras)">
+    <param name="camera_index" value="1"/>
+    <param name="camera_name" value="gelsight_cam2"/>
+    <remap from="image_raw" to="/gelsight_cam2/image_raw"/>
+  </node>
+
+</launch>

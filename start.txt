@@ -24,7 +24,7 @@ homing position
 std::array<double, 7> q_goal = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 
 
-Se controlador näo iniciar 
+Se controlador näo iniciar      
 
 # 1. Reiniciar o Franka controller
 ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
@@ -47,3 +47,6 @@ sleep 10 && ros2 run controller_manager spawner joint_trajectory_controller
 ros2 run tension_control move_homing
 
 ./src/tension_control/scripts/homing_routine_auto.sh
+
+ABRIR CAMERA
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tension_control camera_demo.launch.xml

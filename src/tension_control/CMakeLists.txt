@@ -28,24 +28,14 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES geometry_msgs std_msgs
 )
 
-# Add executables
+# Add executables (only for files that exist)
 add_executable(gelsight_camera_node src/gelsight_camera_node.cpp)
-add_executable(tactile_sensor_node src/tactile_sensor_node.cpp)
 add_executable(admittance_controller src/admittance_controller.cpp)
 add_executable(move_homing src/move_homing.cpp)
 
 ament_target_dependencies(gelsight_camera_node 
   rclcpp 
   sensor_msgs 
-  cv_bridge 
-  OpenCV
-)
-
-ament_target_dependencies(tactile_sensor_node 
-  rclcpp 
-  sensor_msgs 
-  geometry_msgs
-  std_msgs
   cv_bridge 
   OpenCV
 )
@@ -72,7 +62,6 @@ target_link_libraries(admittance_controller Eigen3::Eigen)
 # Install targets
 install(TARGETS
   gelsight_camera_node
-  tactile_sensor_node
   admittance_controller
   move_homing
   DESTINATION lib/${PROJECT_NAME}
@@ -82,6 +71,9 @@ install(TARGETS
 install(PROGRAMS
   src/slide_along_cable_primitive.py
   src/slide_cable_client.py
+  src/camera_viewer.py
+  src/camera_publisher.py
+  scripts/gripper_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -95,6 +87,16 @@ install(DIRECTORY
 install(DIRECTORY
   config
   DESTINATION share/${PROJECT_NAME}/
+)
+
+# Install Python scripts
+install(PROGRAMS
+  src/camera_publisher.py
+  src/camera_viewer.py
+  src/gelsight_object_detection.py
+  src/gelsight_detector_visual.py
+  src/gelsight_marker_detector.py
+  DESTINATION lib/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

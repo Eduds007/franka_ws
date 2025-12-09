@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Integrated Tension Control with Tactile Feedback Launch File -->
+  
+  <!-- Arguments -->
+  <arg name="config_file" default="$(find-pkg-share tension_control)/config/integrated_system_params.yaml" 
+       description="Configuration file for integrated system"/>
+  <arg name="enable_cameras" default="false" description="Start camera nodes"/>
+  <arg name="enable_gui" default="false" description="Enable tactile detection GUI"/>
+  <arg name="enable_safety_monitoring" default="true" description="Enable safety monitoring"/>
+  <arg name="robot_ip" default="172.16.0.2" description="Robot IP address"/>
+  <arg name="load_gripper" default="true" description="Load gripper"/>
+  
+  <!-- Robot State Publisher and Controllers (if not already running) -->
+  <arg name="start_robot" default="false" description="Start robot bringup"/>
+  
+  <group if="$(var start_robot)">
+    <include file="$(find-pkg-share franka_bringup)/launch/franka.launch.py">
+      <arg name="robot_ip" value="$(var robot_ip)"/>
+      <arg name="load_gripper" value="$(var load_gripper)"/>
+    </include>
+  </group>
+
+  <!-- GelSight Camera Nodes -->
+  <group if="$(var enable_cameras)">
+    <node pkg="tension_control" exec="gelsight_camera_node" name="gelsight_cam1" 
+          output="screen">
+      <param from="$(var config_file)" />
+      <remap from="image_raw" to="/gelsight_cam1/image_raw"/>
+    </node>
+    
+    <node pkg="tension_control" exec="gelsight_camera_node" name="gelsight_cam2" 
+          output="screen">
+      <param from="$(var config_file)" />
+      <remap from="image_raw" to="/gelsight_cam2/image_raw"/>
+    </node>
+  </group>
+
+  <!-- Tactile Object Detection Service -->
+  <node pkg="tension_control" exec="tactile_detection_service.py" 
+        name="tactile_detection_service" output="screen">
+    <param from="$(var config_file)" />
+  </node>
+
+  <!-- Tactile Detection GUI (optional) -->
+  <node pkg="tension_control" exec="tactile_object_detector.py" 
+        name="tactile_detection_gui" output="screen" if="$(var enable_gui)">
+    <param from="$(var config_file)" />
+  </node>
+
+  <!-- Integrated Tension Control with Tactile Feedback -->
+  <node pkg="tension_control" exec="tension_control_tactile.py" 
+        name="tension_control_tactile" output="screen">
+    <param from="$(var config_file)" />
+  </node>
+
+  <!-- Safety Monitoring (optional) -->
+  <group if="$(var enable_safety_monitoring)">
+    <node pkg="tension_control" exec="safety_monitor" name="safety_monitor" 
+          output="screen" if="false"> <!-- Disabled for now as safety_monitor doesn't exist yet -->
+      <param from="$(var config_file)" />
+    </node>
+  </group>
+
+  <!-- Static transforms (if needed) -->
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="gelsight_cam1_tf"
+        args="0 0 0 0 0 0 panda_link0 gelsight_cam1_frame" />
+        
+  <node pkg="tf2_ros" exec="static_transform_publisher" name="gelsight_cam2_tf"
+        args="0 0 0 0 0 0 panda_link0 gelsight_cam2_frame" />
+
+  <!-- RViz for visualization (optional) -->
+  <arg name="rviz" default="false" description="Start RViz"/>
+  <node pkg="rviz2" exec="rviz2" name="rviz2" output="screen" if="$(var rviz)"
+        args="-d $(find-pkg-share tension_control)/config/tactile_control.rviz" />
+
+</launch>
