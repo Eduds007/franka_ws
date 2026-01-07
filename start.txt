@@ -24,7 +24,9 @@ homing position
 std::array<double, 7> q_goal = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
 
 
-Se controlador näo iniciar      
+Se controlador näo iniciar     
+
+# 0. ATIVAR FCI
 
 # 1. Reiniciar o Franka controller
 ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
