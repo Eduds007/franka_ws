@@ -11,4 +11,10 @@
   
   <!-- Camera Viewer Node -->
   <node pkg="tactile_cameras" exec="camera_viewer.py" name="camera_viewer" output="screen"/>
+  
+  <!-- Force Estimator Node -->
+  <node pkg="tension_estimator" exec="force_estimator_node" name="feats_force_estimator" output="screen">
+    <param name="camera1_topic" value="/gelsight_cam1/image_raw"/>
+    <param name="camera2_topic" value="/gelsight_cam2/image_raw"/>
+  </node>
 </launch>

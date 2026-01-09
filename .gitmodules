@@ -4,3 +4,6 @@
 [submodule "src/libfranka"]
 	path = src/libfranka
 	url = https://github.com/frankarobotics/libfranka.git
+[submodule "src/feats"]
+	path = src/feats
+	url = https://github.com/feats-ai/feats.git
