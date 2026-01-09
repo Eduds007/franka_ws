@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <launch>
   <!-- Camera Publisher Node -->
-  <node pkg="tension_control" exec="camera_publisher.py" name="camera_publisher" output="screen">
+  <node pkg="tactile_cameras" exec="camera_publisher.py" name="camera_publisher" output="screen">
     <param name="camera1_id" value="0"/>
     <param name="camera2_id" value="2"/>
     <param name="fps" value="30.0"/>
@@ -10,5 +10,5 @@
   </node>
   
   <!-- Camera Viewer Node -->
-  <node pkg="tension_control" exec="camera_viewer.py" name="camera_viewer" output="screen"/>
+  <node pkg="tactile_cameras" exec="camera_viewer.py" name="camera_viewer" output="screen"/>
 </launch>

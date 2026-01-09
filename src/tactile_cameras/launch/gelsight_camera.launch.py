@@ -10,8 +10,8 @@ from launch.substitutions import LaunchConfiguration
 
 def generate_launch_description():
     # Get the path to the config file
-    tension_control_config = os.path.join(
-        get_package_share_directory('tension_control'),
+    tactile_cameras_config = os.path.join(
+        get_package_share_directory('tactile_cameras'),
         'config',
         'gelsight_params.yaml'
     )
@@ -37,11 +37,11 @@ def generate_launch_description():
     
     # GelSight left camera node
     gelsight_left_camera_node = Node(
-        package='tension_control',
-        executable='tension_control_node',
+        package='tactile_cameras',
+        executable='gelsight_camera_node',
         name='gelsight_left_camera_node',
         parameters=[
-            tension_control_config,
+            tactile_cameras_config,
             {
                 'camera_id': LaunchConfiguration('left_camera_id'),
                 'frame_rate': LaunchConfiguration('frame_rate'),
@@ -54,11 +54,11 @@ def generate_launch_description():
     
     # GelSight right camera node
     gelsight_right_camera_node = Node(
-        package='tension_control',
-        executable='tension_control_node',
+        package='tactile_cameras',
+        executable='gelsight_camera_node',
         name='gelsight_right_camera_node',
         parameters=[
-            tension_control_config,
+            tactile_cameras_config,
             {
                 'camera_id': LaunchConfiguration('right_camera_id'),
                 'frame_rate': LaunchConfiguration('frame_rate'),

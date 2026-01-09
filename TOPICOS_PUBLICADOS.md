@@ -81,35 +81,46 @@ Esses são **services** (não tópicos). Ainda assim são essenciais para opera�
 
 ---
 
-## 7) Tension Control / Tactile detection (pacote tension_control)
+## 7) Tactile Cameras (pacote tactile_cameras)
 
 ### 7.1 Câmeras (publishing de imagens)
 
 | Tópico | Tipo | Quem publica | O que é publicado |
 |---|---|---|---|
-| `/gelsight_cam1/image_raw` | `sensor_msgs/msg/Image` | `camera_publisher.py` (ou outros nós) | Imagem do GelSight/câmera 1. |
-| `/gelsight_cam2/image_raw` | `sensor_msgs/msg/Image` | `camera_publisher.py` (ou outros nós) | Imagem do GelSight/câmera 2. |
-| `/gelsight/<side>/image_raw` (ex.: `/gelsight/left/image_raw`) | `sensor_msgs/msg/Image` | `gelsight_camera_node` (C++) | Imagem de uma câmera GelSight por lado (`left/right`). |
-| `/gelsight/<side>/camera_info` | `sensor_msgs/msg/CameraInfo` | `gelsight_camera_node` (C++) | Informações básicas da câmera (matriz intrínseca simplificada). |
+| `/camera/camera1/image_raw` | `sensor_msgs/msg/Image` | `camera_publisher.py` (tactile_cameras) | Imagem da câmera USB 1. |
+| `/camera/camera2/image_raw` | `sensor_msgs/msg/Image` | `camera_publisher.py` (tactile_cameras) | Imagem da câmera USB 2. |
+| `/gelsight/left/image_raw` | `sensor_msgs/msg/Image` | `gelsight_camera_node` (C++, tactile_cameras) | Imagem da câmera GelSight esquerda. |
+| `/gelsight/right/image_raw` | `sensor_msgs/msg/Image` | `gelsight_camera_node` (C++, tactile_cameras) | Imagem da câmera GelSight direita. |
+| `/gelsight/left/camera_info` | `sensor_msgs/msg/CameraInfo` | `gelsight_camera_node` (C++, tactile_cameras) | Informações da câmera esquerda. |
+| `/gelsight/right/camera_info` | `sensor_msgs/msg/CameraInfo` | `gelsight_camera_node` (C++, tactile_cameras) | Informações da câmera direita. |
 
 **Referências no código**
-- `tension_control/src/camera_publisher.py`: publica `/gelsight_cam1/image_raw` e `/gelsight_cam2/image_raw`.
-- `tension_control/src/gelsight_camera_node.cpp`: publica `/gelsight/<side>/image_raw` e `/gelsight/<side>/camera_info`.
+- `tactile_cameras/src/camera_publisher.py`: publica imagens de câmeras USB.
+- `tactile_cameras/src/gelsight_camera_node.cpp`: publica imagens e info das câmeras GelSight.
 
 ### 7.2 Detecção tátil (publicadores de estado/detecção)
 
 | Tópico | Tipo | Quem publica | O que é publicado |
 |---|---|---|---|
-| `/tension_control/object_detected` | `std_msgs/msg/Bool` | `tactile_detection_service.py`, `gelsight_object_detection.py`, `simple_tactile_demo.py` | `true/false` indicando se há objeto detectado pelos sensores táteis. |
-| `/tension_control/object_confidence` | `std_msgs/msg/Float32` | mesmos acima | Confiança (0.0–1.0) da detecção. |
-| `/tension_control/recommended_grip_force` | `std_msgs/msg/Float32` | `tactile_detection_service.py` e `simple_tactile_demo.py` | Força recomendada de preensão (N) para controle adaptativo do gripper. |
-| `/tension_control/detection_status` | `std_msgs/msg/String` | detectores/demos | Texto com status (ex.: aprendendo background, detectando, etc.). |
-| `/tension_control/object_location` | `std_msgs/msg/Int32` | detectores/demos | Local da detecção: 0=nenhum, 1=cam1, 2=cam2, 3=ambos. |
-| `/tension_control/deformation_level` | `std_msgs/msg/Float32` | `gelsight_object_detection.py` | Nível/medida de deformação (heurística) usada para detecção. |
+| `/gelsight/object_detected` | `std_msgs/msg/Bool` | `gelsight_object_detection.py` (tactile_cameras) | `true/false` indicando se há objeto detectado pelos sensores táteis. |
+| `/gelsight/object_confidence` | `std_msgs/msg/Float32` | `gelsight_object_detection.py` (tactile_cameras) | Confiança (0.0–1.0) da detecção. |
+| `/gelsight/detection_status` | `std_msgs/msg/String` | detectores GelSight (tactile_cameras) | Texto com status (ex.: aprendendo background, detectando, etc.). |
+| `/gelsight/object_location` | `std_msgs/msg/Int32` | detectores GelSight (tactile_cameras) | Local da detecção: 0=nenhum, 1=cam1, 2=cam2, 3=ambos. |
+| `/gelsight/deformation` | `geometry_msgs/msg/Vector3` | `gelsight_marker_detector.py` (tactile_cameras) | Vetor de deformação detectado pelos marcadores GelSight. |
 
-### 7.3 Admittance controller (tension_control)
+**Referências no código**
+- `tactile_cameras/src/gelsight_object_detection.py`: publicador principal de detecção.
+- `tactile_cameras/src/gelsight_marker_detector.py`: detecção baseada em rastreamento de marcadores.
+- `tactile_cameras/src/gelsight_detector_visual.py`: visualização e feedback visual.
+- `tactile_cameras/src/gelsight_detector_debug.py`: versão debug com logging detalhado.
 
-O arquivo `admittance_controller.cpp` está parcialmente omitido no trecho, mas já define assinaturas de interfaces.
+---
+
+## 8) Tension Control (pacote tension_control)
+
+### 8.1 Admittance controller
+
+O arquivo `admittance_controller.cpp` implementa controle por admitância.
 
 | Tópico (esperado pelo código) | Tipo | Quem publica | O que é publicado |
 |---|---|---|---|
@@ -121,6 +132,6 @@ O arquivo `admittance_controller.cpp` está parcialmente omitido no trecho, mas 
 
 ---
 
-## 8) Onde completar/ajustar esta documentação
+## 9) Onde completar/ajustar esta documentação
 
 Se você quiser que este arquivo liste **todos** os tópicos do sistema (incluindo MoveIt, RViz, controllers e plugins), posso gerar uma segunda versão baseada em uma lista/scan do runtime (por exemplo, saída do `ros2 topic list` e `ros2 topic info -v`).

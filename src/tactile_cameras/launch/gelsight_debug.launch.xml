@@ -3,7 +3,7 @@
   <!-- GelSight Object Detection with Debug Logging -->
   
   <!-- Camera Publisher Node -->
-  <node pkg="tension_control" exec="camera_publisher.py" name="camera_publisher" output="screen">
+  <node pkg="tactile_cameras" exec="camera_publisher.py" name="camera_publisher" output="screen">
     <param name="camera1_id" value="1"/>
     <param name="camera2_id" value="3"/>
     <param name="fps" value="30.0"/>
@@ -12,7 +12,7 @@
   </node>
   
   <!-- GelSight Object Detection with Enhanced Logging -->
-  <node pkg="tension_control" exec="gelsight_detector_debug.py" name="gelsight_detector_debug" output="screen">
+  <node pkg="tactile_cameras" exec="gelsight_detector_debug.py" name="gelsight_detector_debug" output="screen">
     <param name="detection_threshold" value="0.15"/>
     <param name="reference_frames" value="10"/>
     <param name="marker_detection_threshold" value="30"/>

@@ -9,9 +9,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
-find_package(sensor_msgs REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(OpenCV REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -19,26 +16,17 @@ find_package(Eigen3 REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(control_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 
 # Generate custom interfaces
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/SlideAlongCable.action"
-  "srv/StartSlideAlongCable.srv"
-  "srv/StopSlideAlongCable.srv"
   DEPENDENCIES geometry_msgs std_msgs
 )
 
 # Add executables (only for files that exist)
-add_executable(gelsight_camera_node src/gelsight_camera_node.cpp)
 add_executable(admittance_controller src/admittance_controller.cpp)
 add_executable(move_homing src/move_homing.cpp)
-
-ament_target_dependencies(gelsight_camera_node 
-  rclcpp 
-  sensor_msgs 
-  cv_bridge 
-  OpenCV
-)
 
 ament_target_dependencies(admittance_controller 
   rclcpp 
@@ -61,7 +49,6 @@ target_link_libraries(admittance_controller Eigen3::Eigen)
 
 # Install targets
 install(TARGETS
-  gelsight_camera_node
   admittance_controller
   move_homing
   DESTINATION lib/${PROJECT_NAME}
@@ -71,8 +58,6 @@ install(TARGETS
 install(PROGRAMS
   src/slide_along_cable_primitive.py
   src/slide_cable_client.py
-  src/camera_viewer.py
-  src/camera_publisher.py
   scripts/gripper_control.py
   DESTINATION lib/${PROJECT_NAME}
 )
@@ -87,16 +72,6 @@ install(DIRECTORY
 install(DIRECTORY
   config
   DESTINATION share/${PROJECT_NAME}/
-)
-
-# Install Python scripts
-install(PROGRAMS
-  src/camera_publisher.py
-  src/camera_viewer.py
-  src/gelsight_object_detection.py
-  src/gelsight_detector_visual.py
-  src/gelsight_marker_detector.py
-  DESTINATION lib/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)

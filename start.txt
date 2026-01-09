@@ -51,4 +51,4 @@ ros2 run tension_control move_homing
 ./src/tension_control/scripts/homing_routine_auto.sh
 
 ABRIR CAMERA
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tension_control camera_demo.launch.xml
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras camera_demo.launch.xml
