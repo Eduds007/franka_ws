@@ -59,6 +59,14 @@ cd /home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict && source /home
 
 cd /home/nuc_6g_life_3/franka_ws && colcon build --packages-select franka_moveit_example
 
+# SIMULADO (RViz com hardware fake)
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=dont-care use_fake_hardware:=true
+
+# ROBÔ REAL (RViz com robô físico)
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
 
+# Executar exemplo com círculo (robô real)
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_real_robot
+
+# Executar exemplo simples (simulado)
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_example

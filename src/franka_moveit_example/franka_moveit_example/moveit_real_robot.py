@@ -11,7 +11,52 @@ from rclpy.node import Node
 from pymoveit2 import MoveIt2
 from pymoveit2.robots import panda
 import time
+import math
 from threading import Thread
+
+def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=16, orientation=None):
+    """
+    Desenha um círculo no plano ZY com o end effector.
+    X é mantido fixo enquanto Y e Z variam para criar o círculo vertical.
+    
+    Args:
+        moveit2: Objeto MoveIt2
+        node: Nó ROS2
+        center_x: Coordenada X fixa do círculo
+        center_y, center_z: Coordenadas do centro do círculo no plano YZ
+        radius: Raio do círculo em metros
+        num_points: Número de pontos no círculo (mais pontos = movimento mais suave)
+        orientation: Orientação do end effector [x, y, z, w] (quaternion)
+    """
+    if orientation is None:
+        orientation = [1.0, 0.0, 0.0, 0.0]  # Orientação padrão
+    
+    node.get_logger().info(f"⭕ Desenhando círculo no plano ZY:")
+    node.get_logger().info(f"   X fixo: {center_x:.3f} m")
+    node.get_logger().info(f"   Centro YZ: [{center_y:.3f}, {center_z:.3f}]")
+    node.get_logger().info(f"   Raio: {radius:.3f} m")
+    node.get_logger().info(f"   Pontos: {num_points}")
+    
+    for i in range(num_points + 1):  # +1 para fechar o círculo
+        angle = 2 * math.pi * i / num_points
+        
+        # Calcular posição no círculo (plano ZY - vertical)
+        # X permanece fixo
+        # Y e Z variam para formar o círculo
+        x = center_x  # X fixo
+        y = center_y + radius * math.cos(angle)  # Y varia em círculo
+        z = center_z + radius * math.sin(angle)  # Z varia em círculo
+        
+        node.get_logger().info(f"   → Ponto {i+1}/{num_points+1}: [{x:.3f}, {y:.3f}, {z:.3f}]")
+        
+        # Mover para o ponto usando trajetória cartesiana
+        moveit2.move_to_pose(position=[x, y, z], quat_xyzw=orientation, cartesian=True)
+        moveit2.wait_until_executed()
+        
+        # Pequena pausa entre pontos
+        time.sleep(0.2)
+    
+    node.get_logger().info("   ✓ Círculo completo!")
 
 def main(args=None):
     rclpy.init(args=args)
@@ -71,6 +116,31 @@ def main(args=None):
         node.get_logger().info("")
         time.sleep(2.0)
         
+        # Movimento 3: Desenhar um círculo
+        node.get_logger().info("⭕ MOVIMENTO 3: Desenhando um círculo no plano ZY")
+        node.get_logger().info("")
+        
+        # Definir parâmetros do círculo no plano ZY
+        circle_center_x = 0.5  # X fixo (distância do robô)
+        circle_center_y = 0.0  # Centro Y do círculo
+        circle_center_z = 0.5  # Centro Z do círculo (altura)
+        circle_radius = 0.08   # Raio do círculo (8 cm)
+        circle_points = 20     # Número de pontos (mais = mais suave)
+        
+        # Desenhar o círculo
+        draw_circle(
+            moveit2=moveit2,
+            node=node,
+            center_x=circle_center_x,
+            center_y=circle_center_y,
+            center_z=circle_center_z,
+            radius=circle_radius,
+            num_points=circle_points,
+            orientation=[1.0, 0.0, 0.0, 0.0]
+        )
+        
+        node.get_logger().info("")
+        time.sleep(2.0)
         
         # Retornar à posição HOME
         node.get_logger().info("🏠 MOVIMENTO 4: Retornando à posição HOME")
