@@ -15,16 +15,17 @@ import time
 import math
 from threading import Thread
 
-# Variável global para controlar se o robô deve parar
-emergency_stop = False
+# Variável global para controlar pausa temporária do robô
+pause_movement = False
 last_force_values = []
+
 
 def force_callback(msg, node):
     """
     Callback para monitorar os valores de força do tópico /feats/cam1/total_force.
-    Para o robô se algum valor for menor que -1.0 (força negativa excessiva).
+    Sinaliza para pausar próximo movimento se algum valor for menor que -1.0.
     """
-    global emergency_stop, last_force_values
+    global pause_movement, last_force_values
     
     last_force_values = list(msg.data)
     
@@ -32,18 +33,15 @@ def force_callback(msg, node):
     valores_excessivos = [v for v in msg.data if v < -1.0]
     
     if valores_excessivos:
-        if not emergency_stop:
-            node.get_logger().warn(f"🚨 ALERTA DE FORÇA DETECTADO!")
-            node.get_logger().warn(f"   ⚠️  Valores menores que -1.0 detectados: {valores_excessivos}")
+        if not pause_movement:
+            node.get_logger().warn(f"🚨 TOQUE DETECTADO!")
+            node.get_logger().warn(f"   ⚠️  Valores menores que -1.0: {valores_excessivos}")
             node.get_logger().warn(f"   Todos os valores: {[f'{v:.4f}' for v in msg.data]}")
-            node.get_logger().warn(f"   ⛔ PARANDO MOVIMENTO DO ROBÔ!")
-            emergency_stop = True
-        return
-    
-    # Se estava em stop e os valores voltaram ao normal
-    if emergency_stop and all(v >= -1.0 for v in msg.data):
-        node.get_logger().info(f"✅ Valores de força normalizados. Stop desativado.")
-        emergency_stop = False
+            pause_movement = True
+    else:
+        # Valores normalizaram, pode continuar
+        if pause_movement:
+            pause_movement = False
 
 def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=16, orientation=None):
     """
@@ -62,7 +60,7 @@ def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=
     if orientation is None:
         orientation = [1.0, 0.0, 0.0, 0.0]  # Orientação padrão
     
-    global emergency_stop
+    global pause_movement, last_force_values
     
     node.get_logger().info(f"⭕ Desenhando círculo no plano ZY:")
     node.get_logger().info(f"   X fixo: {center_x:.3f} m")
@@ -71,13 +69,6 @@ def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=
     node.get_logger().info(f"   Pontos: {num_points}")
     
     for i in range(num_points + 1):  # +1 para fechar o círculo
-        # Verificar se deve parar o movimento
-        if emergency_stop:
-            node.get_logger().error(f"⛔ MOVIMENTO INTERROMPIDO POR FORÇA EXCESSIVA!")
-            node.get_logger().info(f"   Última força detectada: {last_force_values}")
-            
-            break
-        
         angle = 2 * math.pi * i / num_points
         
         # Calcular posição no círculo (plano ZY - vertical)
@@ -89,16 +80,43 @@ def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=
         
         node.get_logger().info(f"   → Ponto {i+1}/{num_points+1}: [{x:.3f}, {y:.3f}, {z:.3f}]")
         
-        # Mover para o ponto usando trajetória cartesiana
-        moveit2.move_to_pose(position=[x, y, z], quat_xyzw=orientation, cartesian=True)
-        moveit2.wait_until_executed()
+        # Continua enviando o mesmo ponto enquanto houver força excessiva
+        movement_successful = False
+        retry_count = 0
         
-        # Pequena pausa entre pontos
-        time.sleep(0.2)
+        while not movement_successful:
+            try:
+                # Verificar se há força excessiva
+                if pause_movement:
+                    retry_count += 1
+                    if retry_count == 1:  # Só loga na primeira vez
+                        node.get_logger().warn(f"   ⚠️  Força excessiva detectada! Mantendo posição atual...")
+                    
+                    # Envia o MESMO ponto novamente
+                    moveit2.move_to_pose(position=[x, y, z], quat_xyzw=orientation, cartesian=True)
+                    moveit2.wait_until_executed()
+                    
+                    # Aguarda um pouco antes de tentar novamente
+                    time.sleep(0.1)
+                else:
+                    # Sem força excessiva, move normalmente
+                    if retry_count > 0:
+                        node.get_logger().info(f"   ✅ Força normalizada após {retry_count} tentativas. Continuando...")
+                    
+                    moveit2.move_to_pose(position=[x, y, z], quat_xyzw=orientation, cartesian=True)
+                    moveit2.wait_until_executed()
+                    movement_successful = True
+                    
+            except Exception as e:
+                node.get_logger().error(f"   ❌ Erro no movimento: {e}")
+                node.get_logger().warn(f"   ⚠️  Aguardando 2s antes de continuar...")
+                time.sleep(2.0)
+                # Em caso de erro, tenta continuar
+                movement_successful = True
+
     
-    if not emergency_stop:
-        node.get_logger().info("   ✓ Círculo completo!")
-    
+    node.get_logger().info("   ✓ Círculo completo!")
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -131,6 +149,7 @@ def main(args=None):
     
     node.get_logger().info("📡 Subscriber criado para /feats/cam1/total_force")
     node.get_logger().info("   Monitorando valores de força (limiar: valor < -1.0)")
+    node.get_logger().info("   Modo: PAUSA TEMPORÁRIA (movimento continua após normalização)")
     node.get_logger().info("")
 
     # Wait for initialization
@@ -149,10 +168,13 @@ def main(args=None):
         joint_positions = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
         node.get_logger().info(f"   Posições das juntas: {joint_positions}")
         
-        moveit2.move_to_configuration(joint_positions)
-        moveit2.wait_until_executed()
+        try:
+            moveit2.move_to_configuration(joint_positions)
+            moveit2.wait_until_executed()
+            node.get_logger().info("   ✓ Movimento 1 concluído!")
+        except Exception as e:
+            node.get_logger().error(f"   ❌ Erro no movimento HOME: {e}")
         
-        node.get_logger().info("   ✓ Movimento 1 concluído!")
         node.get_logger().info("")
         time.sleep(2.0)
 
@@ -163,10 +185,13 @@ def main(args=None):
         node.get_logger().info(f"   Posição XYZ: {position}")
         node.get_logger().info(f"   Orientação (quat): {orientation}")
         
-        moveit2.move_to_pose(position=position, quat_xyzw=orientation, cartesian=False)
-        moveit2.wait_until_executed()
+        try:
+            moveit2.move_to_pose(position=position, quat_xyzw=orientation, cartesian=False)
+            moveit2.wait_until_executed()
+            node.get_logger().info("   ✓ Movimento 2 concluído!")
+        except Exception as e:
+            node.get_logger().error(f"   ❌ Erro no movimento cartesiano: {e}")
         
-        node.get_logger().info("   ✓ Movimento 2 concluído!")
         node.get_logger().info("")
         time.sleep(2.0)
         
@@ -198,10 +223,13 @@ def main(args=None):
         
         # Retornar à posição HOME
         node.get_logger().info("🏠 MOVIMENTO 4: Retornando à posição HOME")
-        moveit2.move_to_configuration(joint_positions)
-        moveit2.wait_until_executed()
+        try:
+            moveit2.move_to_configuration(joint_positions)
+            moveit2.wait_until_executed()
+            node.get_logger().info("   ✓ Movimento 4 concluído!")
+        except Exception as e:
+            node.get_logger().error(f"   ❌ Erro retornando ao HOME: {e}")
         
-        node.get_logger().info("   ✓ Movimento 4 concluído!")
         node.get_logger().info("")
         
     except KeyboardInterrupt:

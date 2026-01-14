@@ -70,3 +70,13 @@ cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka
 
 # Executar exemplo simples (simulado)
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_example
+
+
+#controlador basico funcionando - 14/01/2026 - 4 terminais diferentes
+
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras camera_demo.launch.xml
+ros2 topic echo feats/cam1/total_force 
+
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
+
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_real_robot
