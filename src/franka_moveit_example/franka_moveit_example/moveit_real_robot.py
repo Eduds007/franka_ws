@@ -10,9 +10,40 @@ import rclpy
 from rclpy.node import Node
 from pymoveit2 import MoveIt2
 from pymoveit2.robots import panda
+from std_msgs.msg import Float32MultiArray
 import time
 import math
 from threading import Thread
+
+# Variável global para controlar se o robô deve parar
+emergency_stop = False
+last_force_values = []
+
+def force_callback(msg, node):
+    """
+    Callback para monitorar os valores de força do tópico /feats/cam1/total_force.
+    Para o robô se algum valor for menor que -1.0 (força negativa excessiva).
+    """
+    global emergency_stop, last_force_values
+    
+    last_force_values = list(msg.data)
+    
+    # Verificar se algum valor é menor que -1.0 (igual ao total_force_listener)
+    valores_excessivos = [v for v in msg.data if v < -1.0]
+    
+    if valores_excessivos:
+        if not emergency_stop:
+            node.get_logger().warn(f"🚨 ALERTA DE FORÇA DETECTADO!")
+            node.get_logger().warn(f"   ⚠️  Valores menores que -1.0 detectados: {valores_excessivos}")
+            node.get_logger().warn(f"   Todos os valores: {[f'{v:.4f}' for v in msg.data]}")
+            node.get_logger().warn(f"   ⛔ PARANDO MOVIMENTO DO ROBÔ!")
+            emergency_stop = True
+        return
+    
+    # Se estava em stop e os valores voltaram ao normal
+    if emergency_stop and all(v >= -1.0 for v in msg.data):
+        node.get_logger().info(f"✅ Valores de força normalizados. Stop desativado.")
+        emergency_stop = False
 
 def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=16, orientation=None):
     """
@@ -31,6 +62,8 @@ def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=
     if orientation is None:
         orientation = [1.0, 0.0, 0.0, 0.0]  # Orientação padrão
     
+    global emergency_stop
+    
     node.get_logger().info(f"⭕ Desenhando círculo no plano ZY:")
     node.get_logger().info(f"   X fixo: {center_x:.3f} m")
     node.get_logger().info(f"   Centro YZ: [{center_y:.3f}, {center_z:.3f}]")
@@ -38,6 +71,13 @@ def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=
     node.get_logger().info(f"   Pontos: {num_points}")
     
     for i in range(num_points + 1):  # +1 para fechar o círculo
+        # Verificar se deve parar o movimento
+        if emergency_stop:
+            node.get_logger().error(f"⛔ MOVIMENTO INTERROMPIDO POR FORÇA EXCESSIVA!")
+            node.get_logger().info(f"   Última força detectada: {last_force_values}")
+            
+            break
+        
         angle = 2 * math.pi * i / num_points
         
         # Calcular posição no círculo (plano ZY - vertical)
@@ -56,7 +96,9 @@ def draw_circle(moveit2, node, center_x, center_y, center_z, radius, num_points=
         # Pequena pausa entre pontos
         time.sleep(0.2)
     
-    node.get_logger().info("   ✓ Círculo completo!")
+    if not emergency_stop:
+        node.get_logger().info("   ✓ Círculo completo!")
+    
 
 def main(args=None):
     rclpy.init(args=args)
@@ -78,6 +120,18 @@ def main(args=None):
         end_effector_name=panda.end_effector_name(),
         group_name="panda_arm",
     )
+
+    # Criar subscriber para monitorar força do tópico /feats/cam1/total_force
+    force_subscriber = node.create_subscription(
+        Float32MultiArray,
+        '/feats/cam1/total_force',
+        lambda msg: force_callback(msg, node),
+        10
+    )
+    
+    node.get_logger().info("📡 Subscriber criado para /feats/cam1/total_force")
+    node.get_logger().info("   Monitorando valores de força (limiar: valor < -1.0)")
+    node.get_logger().info("")
 
     # Wait for initialization
     node.get_logger().info("="*70)

@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'moveit_example = franka_moveit_example.moveit_example:main',
             'moveit_real_robot = franka_moveit_example.moveit_real_robot:main',
+            'total_force_listener = franka_moveit_example.total_force_listener:main',
         ],
     },
 )
