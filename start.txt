@@ -80,3 +80,7 @@ ros2 topic echo feats/cam1/total_force
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
 
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_real_robot
+
+#executar controlador de velocidade
+
+cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch franka_bringup cartesian_velocity_example_controller.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
