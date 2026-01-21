@@ -84,3 +84,5 @@ cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka
 #executar controlador de velocidade
 
 cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch franka_bringup cartesian_velocity_example_controller.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
+
+#Admitance control com trajetoria circular cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch franka_bringup admittance_example_controller.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false\
