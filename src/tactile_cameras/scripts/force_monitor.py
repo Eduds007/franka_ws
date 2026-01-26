@@ -15,9 +15,13 @@ class ForceMonitorNode(Node):
     def __init__(self):
         super().__init__('force_monitor')
         
-        # Current force values
-        self.force1 = 0.0
-        self.force2 = 0.0
+        # Current force values (x, y, z components)
+        self.force1_x = 0.0
+        self.force1_y = 0.0
+        self.force1_z = 0.0
+        self.force2_x = 0.0
+        self.force2_y = 0.0
+        self.force2_z = 0.0
         
         # Subscribers
         self.force1_sub = self.create_subscription(
@@ -42,22 +46,32 @@ class ForceMonitorNode(Node):
     
     def force1_callback(self, msg):
         """Callback for camera 1 total force"""
-        # Float32MultiArray - pegar o primeiro valor ou a soma
-        if len(msg.data) > 0:
-            self.force1 = msg.data[0] if len(msg.data) == 1 else sum(msg.data)
+        if len(msg.data) >= 3:
+            self.force1_x = msg.data[0]
+            self.force1_y = msg.data[1]
+            self.force1_z = msg.data[2]
         self.print_forces()
     
     def force2_callback(self, msg):
         """Callback for camera 2 total force"""
-        # Float32MultiArray - pegar o primeiro valor ou a soma
-        if len(msg.data) > 0:
-            self.force2 = msg.data[0] if len(msg.data) == 1 else sum(msg.data)
+        if len(msg.data) >= 3:
+            self.force2_x = msg.data[0]
+            self.force2_y = msg.data[1]
+            self.force2_z = msg.data[2]
         self.print_forces()
     
     def print_forces(self):
         """Print current forces and their sum"""
-        total_force = self.force1 + self.force2
-        print(f"Cam1: {self.force1:8.3f} N  |  Cam2: {self.force2:8.3f} N  |  Total: {total_force:8.3f} N")
+        import math
+        
+        # Calculate magnitudes
+        mag1 = math.sqrt(self.force1_x**2 + self.force1_y**2 + self.force1_z**2)
+        mag2 = math.sqrt(self.force2_x**2 + self.force2_y**2 + self.force2_z**2)
+        total_force = mag1 + mag2
+        
+        print(f"Cam1: X={self.force1_x:7.3f} Y={self.force1_y:7.3f} Z={self.force1_z:7.3f} |Mag|={mag1:7.3f} N  |  "
+              f"Cam2: X={self.force2_x:7.3f} Y={self.force2_y:7.3f} Z={self.force2_z:7.3f} |Mag|={mag2:7.3f} N  |  "
+              f"Total: {total_force:7.3f} N")
 
 
 def main():
