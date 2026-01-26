@@ -141,14 +141,14 @@ def update_plot(frame, node, lines, ax):
     if len(time_data) == 0:
         return lines
     
-    # Update lines - only X, Y components + total (Z hidden)
+    # Update all lines - X, Y, Z components + total
     lines[0].set_data(time_data, force1_x_data)  # Cam1 X
     lines[1].set_data(time_data, force1_y_data)  # Cam1 Y
-    # lines[2] = Cam1 Z (hidden)
-    lines[2].set_data(time_data, force2_x_data)  # Cam2 X
-    lines[3].set_data(time_data, force2_y_data)  # Cam2 Y
-    # lines[5] = Cam2 Z (hidden)
-    #lines[4].set_data(time_data, total_force_data)  # Total magnitude
+    lines[2].set_data(time_data, force1_z_data)  # Cam1 Z
+    lines[3].set_data(time_data, force2_x_data)  # Cam2 X
+    lines[4].set_data(time_data, force2_y_data)  # Cam2 Y
+    lines[5].set_data(time_data, force2_z_data)  # Cam2 Z
+    lines[6].set_data(time_data, total_force_data)  # Total magnitude
     
     # Auto-scale axes
     ax.relim()
@@ -168,29 +168,31 @@ def main():
     plt.style.use('seaborn-v0_8-darkgrid')
     fig, ax = plt.subplots(figsize=(12, 7))
     
-    # Create 5 lines: 2 for cam1 (x,y), 2 for cam2 (x,y), 1 for total (Z hidden)
+    # Create 7 lines: 3 for cam1 (x,y,z), 3 for cam2 (x,y,z), 1 for total
     line_cam1_x, = ax.plot([], [], 'r-', lw=1.5, alpha=0.7, label='Cam1 X')
     line_cam1_y, = ax.plot([], [], 'g-', lw=1.5, alpha=0.7, label='Cam1 Y')
+    line_cam1_z, = ax.plot([], [], 'b-', lw=1.5, alpha=0.7, label='Cam1 Z')
     
     line_cam2_x, = ax.plot([], [], 'r--', lw=1.5, alpha=0.7, label='Cam2 X')
     line_cam2_y, = ax.plot([], [], 'g--', lw=1.5, alpha=0.7, label='Cam2 Y')
+    line_cam2_z, = ax.plot([], [], 'b--', lw=1.5, alpha=0.7, label='Cam2 Z')
     
-    #line_total, = ax.plot([], [], 'k-', lw=3, label='Total Magnitude')
+    line_total, = ax.plot([], [], 'k-', lw=3, label='Total Magnitude')
     
-    lines = [line_cam1_x, line_cam1_y,
-             line_cam2_x, line_cam2_y,
-             #line_total
+    lines = [line_cam1_x, line_cam1_y, line_cam1_z,
+             line_cam2_x, line_cam2_y, line_cam2_z,
+             line_total
             ]
     
     # Configure plot
     ax.set_xlabel("Tempo (s)", fontsize=12)
     ax.set_ylabel("Força (N)", fontsize=12)
-    ax.set_title("Componentes de Força dos Sensores GelSight (X, Y)", fontsize=14, fontweight='bold')
+    ax.set_title("Componentes de Força dos Sensores GelSight (X, Y, Z)", fontsize=14, fontweight='bold')
     ax.legend(loc='upper right', fontsize=9)
     ax.grid(True, alpha=0.3)
     
     print("\n" + "="*60)
-    print("📊 Live Force Plot - GelSight Sensors (X, Y)")
+    print("📊 Live Force Plot - GelSight Sensors (X, Y, Z)")
     print("="*60)
     print("📡 Aguardando dados dos tópicos:")
     print("   • /feats/cam1/total_force")
@@ -198,8 +200,10 @@ def main():
     print("\n📈 Gráfico:")
     print("   🔴 Vermelho (sólido)    = Camera 1 - Força X")
     print("   🟢 Verde (sólido)       = Camera 1 - Força Y")
+    print("   🔵 Azul (sólido)        = Camera 1 - Força Z")
     print("   🔴 Vermelho (tracejado) = Camera 2 - Força X")
     print("   🟢 Verde (tracejado)    = Camera 2 - Força Y")
+    print("   🔵 Azul (tracejado)     = Camera 2 - Força Z")
     print("   ⚫ Preto (grosso)       = Magnitude Total")
     print("\n⌨️  Feche a janela do gráfico para sair")
     print("="*60 + "\n")
