@@ -39,6 +39,7 @@ install(PROGRAMS
   src/gelsight_detector_visual.py
   src/gelsight_marker_detector.py
   src/gelsight_detector_debug.py
+  src/tactile_contact_analyzer.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
