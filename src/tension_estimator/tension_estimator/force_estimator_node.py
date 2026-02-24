@@ -35,19 +35,24 @@ class ForceEstimatorNode(Node):
         super().__init__('feats_force_estimator')
         
         # Declare parameters
-        self.declare_parameter('config_file', 
-            '/home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict/predict_config.yaml')
+        self.declare_parameter('config_file_left', 
+            '/home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict/predict_config_left.yaml')
+        self.declare_parameter('config_file_right', 
+            '/home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict/predict_config_right.yaml')
         self.declare_parameter('camera1_topic', '/gelsight_cam1/image_raw')
         self.declare_parameter('camera2_topic', '/gelsight_cam2/image_raw')
         
         # Get parameters
-        config_file = self.get_parameter('config_file').value
+        config_file_left = self.get_parameter('config_file_left').value
+        config_file_right = self.get_parameter('config_file_right').value
         topic1 = self.get_parameter('camera1_topic').value
         topic2 = self.get_parameter('camera2_topic').value
         
-        # Load configuration
-        self.get_logger().info(f"Loading config from: {config_file}")
-        self.config = yaml.load(open(config_file, 'r'), Loader=yaml.FullLoader)
+        # Load configurations
+        self.get_logger().info(f"Loading left config from: {config_file_left}")
+        self.config_left = yaml.load(open(config_file_left, 'r'), Loader=yaml.FullLoader)
+        self.get_logger().info(f"Loading right config from: {config_file_right}")
+        self.config_right = yaml.load(open(config_file_right, 'r'), Loader=yaml.FullLoader)
         
         # CV Bridge
         self.bridge = CvBridge()
@@ -60,24 +65,41 @@ class ForceEstimatorNode(Node):
         
         self.get_logger().info(f"🖥️  Using device: {self.device}")
         
-        # Load model
-        self.model = UNet(
-            enc_chs=self.config["enc_chs"], 
-            dec_chs=self.config["dec_chs"], 
-            out_sz=self.config["output_size"]
+        # Load models for both cameras
+        self.model_left = UNet(
+            enc_chs=self.config_left["enc_chs"], 
+            dec_chs=self.config_left["dec_chs"], 
+            out_sz=self.config_left["output_size"]
         )
         
-        model_path = self.config["model"]
-        # Make path absolute if relative
-        if not os.path.isabs(model_path):
-            model_path = os.path.join(os.path.dirname(config_file), model_path)
-        
-        self.get_logger().info(f"Loading model from: {model_path}")
-        self.model.load_state_dict(
-            torch.load(model_path, map_location=torch.device("cpu"), weights_only=True)
+        self.model_right = UNet(
+            enc_chs=self.config_right["enc_chs"], 
+            dec_chs=self.config_right["dec_chs"], 
+            out_sz=self.config_right["output_size"]
         )
-        self.model.eval().to(self.device)
-        self.get_logger().info(f"✅ Model loaded successfully")
+        
+        # Load left model
+        model_path_left = self.config_left["model"]
+        if not os.path.isabs(model_path_left):
+            model_path_left = os.path.join(os.path.dirname(config_file_left), model_path_left)
+        
+        self.get_logger().info(f"Loading left model from: {model_path_left}")
+        self.model_left.load_state_dict(
+            torch.load(model_path_left, map_location=torch.device("cpu"), weights_only=True)
+        )
+        self.model_left.eval().to(self.device)
+        
+        # Load right model
+        model_path_right = self.config_right["model"]
+        if not os.path.isabs(model_path_right):
+            model_path_right = os.path.join(os.path.dirname(config_file_right), model_path_right)
+        
+        self.get_logger().info(f"Loading right model from: {model_path_right}")
+        self.model_right.load_state_dict(
+            torch.load(model_path_right, map_location=torch.device("cpu"), weights_only=True)
+        )
+        self.model_right.eval().to(self.device)
+        self.get_logger().info(f"✅ Models loaded successfully")
         
         # Subscribers
         self.sub1 = self.create_subscription(Image, topic1, self.camera1_callback, 10)
@@ -127,16 +149,21 @@ class ForceEstimatorNode(Node):
         
         return img
     
-    def make_prediction(self, img):
+    def make_prediction(self, img, config, model):
         """Make force prediction"""
         # Store data in dictionary
         data = {}
         data["gs_img"] = img
         
         # Normalize data
-        norm_file = self.config["norm_file"]
+        norm_file = config["norm_file"]
         if not os.path.isabs(norm_file):
-            config_dir = os.path.dirname(self.get_parameter('config_file').value)
+            # Get the config file path based on which config this is
+            if config == self.config_left:
+                config_file = self.get_parameter('config_file_left').value
+            else:
+                config_file = self.get_parameter('config_file_right').value
+            config_dir = os.path.dirname(config_file)
             norm_file = os.path.join(config_dir, norm_file)
         
         data = normalize(data, norm_file)
@@ -146,8 +173,8 @@ class ForceEstimatorNode(Node):
         gs_img = gs_img.unsqueeze(0).permute(0, 3, 1, 2).to(self.device)
         
         # Load calibration if available
-        if self.config.get("calibration_file") is not None:
-            calibration = np.load(self.config["calibration_file"])
+        if config.get("calibration_file") is not None:
+            calibration = np.load(config["calibration_file"])
             rows, cols = 240, 320
             M = np.float32([[1, 0, calibration[0]], [0, 1, calibration[1]]])
             inputs_prewarp = data["gs_img"]
@@ -159,7 +186,7 @@ class ForceEstimatorNode(Node):
         
         # Get model prediction
         with torch.no_grad():
-            outputs = self.model(inputs)
+            outputs = model(inputs)
         
         # Unnormalize outputs
         outputs_transf = outputs.squeeze(0).permute(1, 2, 0)
@@ -175,7 +202,7 @@ class ForceEstimatorNode(Node):
         return pred_grid_x, pred_grid_y, pred_grid_z
     
     def camera1_callback(self, msg):
-        """Process camera 1 images"""
+        """Process camera 1 images (left camera)"""
         try:
             # Convert ROS image to OpenCV
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -185,8 +212,8 @@ class ForceEstimatorNode(Node):
             if processed_img is None:
                 return
             
-            # Make prediction
-            pred_x, pred_y, pred_z = self.make_prediction(processed_img)
+            # Make prediction using left config and model
+            pred_x, pred_y, pred_z = self.make_prediction(processed_img, self.config_left, self.model_left)
             
             # Calculate total forces
             total_x = np.sum(pred_x)
@@ -220,7 +247,7 @@ class ForceEstimatorNode(Node):
             self.get_logger().error(f"Error processing camera 1: {e}")
     
     def camera2_callback(self, msg):
-        """Process camera 2 images"""
+        """Process camera 2 images (right camera)"""
         try:
             # Convert ROS image to OpenCV
             cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
@@ -230,8 +257,8 @@ class ForceEstimatorNode(Node):
             if processed_img is None:
                 return
             
-            # Make prediction
-            pred_x, pred_y, pred_z = self.make_prediction(processed_img)
+            # Make prediction using right config and model
+            pred_x, pred_y, pred_z = self.make_prediction(processed_img, self.config_right, self.model_right)
             
             # Calculate total forces
             total_x = np.sum(pred_x)
