@@ -1,0 +1,22 @@
+# Cable Pose Estimator Configuration
+# This file contains parameter configurations for the cable pose estimator node
+
+cable_pose_estimator:
+  ros__parameters:
+    # Input topic
+    camera_topic: '/gelsight_cam2/image_raw'
+    
+    # Image processing parameters
+    border_size: 120              # Pixels to ignore at image borders
+    diff_threshold: 10            # Threshold for image difference (0-255)
+    min_contour_area: 500         # Minimum contour area in pixels
+    num_top_regions: 5            # Number of largest regions to select
+    morph_kernel_size: 15         # Kernel size for morphological operations
+    
+    # Publishing parameters
+    publish_rate: 30.0            # Hz - rate to publish pose data
+    debug_visualization: true     # Enable/disable debug image publishing
+    
+    # Calibration
+    pixel_to_mm: 0.0634          # Conversion factor: mm per pixel
+                                  # Adjust based on your camera calibration
