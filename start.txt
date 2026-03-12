@@ -88,13 +88,34 @@ cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source 
 
 #Admitance control com trajetoria circular cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch franka_bringup admittance_example_controller.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false\
 
- cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
- 
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
 
+# SEQUÊNCIA COMPLETA PARA HYBRID POSITION FORCE CONTROLLER - ATUALIZADO 12/03/2026
 
+# Terminal 1: Controlador Híbrido (os broadcasters são carregados automaticamente)
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
 
+# Terminal 2: Câmeras Táteis
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras camera_demo.launch.xml
+
+# Terminal 3: Estimador de Força FEATS
+cd /home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && python3 force_estimator_node.py
+
+# Terminal 4: Estimador de Pose do Cabo
 cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras cable_pose_estimator.launch.py debug_visualization:=true
 
+# Terminal 5: Capturar Referência do Cabo (após todos iniciarem)
 source /opt/ros/humble/setup.bash && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && ros2 service call /cable_pose_estimator/capture_reference std_srvs/srv/Trigger "{}"
 
+# MONITORAMENTO (opcional)
+ros2 topic echo /cable_pose_estimator/cable_pose
+ros2 topic echo /feats/cam1/total_force
+ros2 topic echo /feats/cam2/total_force
 ros2 run rqt_image_view rqt_image_view /cable_pose_estimator/debug_image
+ros2 control list_controllers  # Ver status dos controladores e broadcasters
+
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
+source /opt/ros/humble/setup.bash && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && ros2 service call /cable_pose_estimator/capture_reference std_srvs/srv/Trigger "{}"
+cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras cable_pose_estimator.launch.py debug_visualization:=true
+ros2 run rqt_image_view rqt_image_view /cable_pose_estimator/debug_image
+ros2 topic echo /cable_pose_estimator/cable_pose
