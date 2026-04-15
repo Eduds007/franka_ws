@@ -4,18 +4,13 @@ import numpy as np
 
 from robot_descriptions.loaders.mujoco import load_robot_description
 
-# =========================
-# 1. Carregar robô
-# =========================
-# model: descrição da geometria, dinâmica e restrições do robô
-# data: estado atual da simulação (posições, velocidades, forças)
 model = load_robot_description("panda_mj_description")
 data = mujoco.MjData(model)
+SIM_GRAVITY = np.array([0.0, 0.0, -9.81])
+COMPENSATE_GRAVITY = False
+model.opt.gravity[:] = SIM_GRAVITY
 
-# =========================
-# 2. Identificar end-effector
-# =========================
-EE_BODY_NAME = "hand"  # end-effector do Panda
+EE_BODY_NAME = "hand"
 
 ee_id = mujoco.mj_name2id(
     model,
@@ -27,99 +22,168 @@ if ee_id == -1:
     print(f"Erro: Body '{EE_BODY_NAME}' não encontrado!")
     exit(1)
 
-# =========================
-# 3. Parâmetros
-# =========================
+step = 0
+dt = float(model.opt.timestep)
+prev_J = None
+prev_q_dot = None
+Kp_pos = np.diag([120.0, 120.0, 120.0])
+Kd_pos = np.diag([24.0, 24.0, 24.0])
+x_des = np.array([0.55, 0.5, 0.0])
+F_des = np.array([0.0, 0.0, -8.0])
+ENABLE_FORCE_SIM = True
+F_sim = np.array([0.0, 0.0, -6.0])
+FORCE_Z_REF = 0.0
+FORCE_Z_DECAY = 2.0
+lambda_pinv = 1e-4
+Md_force = np.diag([1.5, 1.5, 1.5])
+Bd_force = np.diag([80.0, 80.0, 80.0])
+Kd_force = np.diag([120.0, 120.0, 120.0])
+e_force = np.zeros(3)
+e_dot_force = np.zeros(3)
+Md_imp = 1.5 * np.eye(model.nv)
+Bd_imp = 80.0 * np.eye(model.nv)
+Kd_imp = 120.0 * np.eye(model.nv)
 
-# posição desejada (XYZ controlado)
-# Unidades: [m, m, m] (metros)
-x_des = np.array([-0.5, -0.5, 0.5])  # Posição mais realista
 
-# força desejada (empurrar pra baixo)
-# Unidades: [N, N, N] (Newtons)
-F_des = np.array([0, 0, 0])
+def draw_marker_sphere(viewer, pos, rgba, radius=0.02):
+    if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
+        return
+    geom = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+    viewer.user_scn.ngeom += 1
+    mujoco.mjv_initGeom(
+        geom,
+        mujoco.mjtGeom.mjGEOM_SPHERE,
+        np.array([radius, 0.0, 0.0]),
+        pos.astype(float),
+        np.eye(3).reshape(-1),
+        np.array(rgba, dtype=float),
+    )
 
-# ganhos de controle - AJUSTADOS para estabilidade
-# Kp: [N/m] - converte erro de posição em força
-# Kd: [N·s/m] - converte velocidade em força (amortecimento)
-# Kf: [1/1] - adimensional - escala de compensação de força
-Kp = 100  # Aumentado para melhor resposta (força/metro)
-Kd = 20   # Aumentado para amortecimento adequado
-Kf = 0.1  # Reduzido para evitar instabilidade
 
-# matriz de seleção: posição em XYZ (PID puro)
-# [1, 1, 1] significa: controlar posição em X,Y,Z
-S = np.diag([1, 1, 1])  # Mudado para controle de posição puro
-I = np.eye(3)
-
-# damping pseudo-inversa
-# Unidades: [1/(N²)] - previne singularidades no Jacobiano
-lambda_ = 1e-3  # Aumentado para melhor estabilidade numérica
-
-# =========================
-# 4. Função de controle
-# =========================
-def controller(model, data):
-    # ----- estado EE -----
-    # x: posição do end-effector [m, m, m] (metros em X, Y, Z)
-    x = data.xpos[ee_id]  # posição do body
-    
-    # ----- Jacobiano -----
-    # jacp: Jacobiano linear (posição) [m/rad] 
-    #       shape: (3, nv) - mapeia velocidade das juntas para velocidade linear
-    # jacr: Jacobiano angular (rotação) [rad/rad]
-    #       shape: (3, nv) - mapeia velocidade das juntas para velocidade angular
+def multi_priority_controller(model, data, ee_id, state):
     jacp = np.zeros((3, model.nv))
     jacr = np.zeros((3, model.nv))
     mujoco.mj_jacBody(model, data, jacp, jacr, ee_id)
-    J = jacp
-    
-    # dx: velocidade linear do end-effector [m/s]
-    #     calculada como: J @ qvel onde qvel tem unidades [rad/s]
-    #     resultado: [m/s]
-    dx = J @ data.qvel
+    J = np.vstack((jacp, jacr))
+    x = data.xpos[ee_id].copy()
+    q = data.qpos.copy()
+    q_dot = data.qvel.copy()
+    e = state["q_d"] - q
+    q_dot_d = np.zeros_like(q_dot)
+    q_dot_dot_d = np.zeros_like(q_dot)
+    e_dot = q_dot_d - q_dot
+    x_dot = J @ q_dot
+    x_dot_pos = jacp @ q_dot
+    F_ext_measured = data.cfrc_ext[ee_id, 3:6].copy()
+    F_sim_current = np.zeros(3)
+    tau_sim = np.zeros(model.nv)
+    if state["enable_force_sim"]:
+        z = float(x[2])
+        z_delta = max(0.0, z - state["force_z_ref"])
+        force_scale = 1.0 / (1.0 + state["force_z_decay"] * z_delta)
+        F_sim_current = state["F_sim_base"] * force_scale
+        tau_sim = jacp.T @ F_sim_current
+    F_ext = F_ext_measured + F_sim_current
+    F_err = state["F_d"] - F_ext
+    wrench_ext = data.cfrc_ext[ee_id].copy()
+    tau_ext = J.T @ wrench_ext
+    e_dot_dot_force = np.linalg.solve(
+        Md_force,
+        F_err - Bd_force @ state["e_dot_force"] - Kd_force @ state["e_force"],
+    )
+    state["e_dot_force"] = state["e_dot_force"] + e_dot_dot_force * dt
+    state["e_force"] = state["e_force"] + state["e_dot_force"] * dt
+    x_d = state["x_des"] + state["e_force"]
+    x_dot_d = state["e_dot_force"]
+    x_dot_dot_d = e_dot_dot_force
 
-    # ----- controle de posição PID simples -----
-    # F_pos: força de controle proporcional-derivativo [N, N, N]
-    # Kp * (x_des - x): [N/m] * [m] = [N]
-    # Kd * dx: [N·s/m] * [m/s] = [N]
-    F_pos = Kp * (x_des - x) - Kd * dx
-    
-    # Print do erro de posição [m]
-    print(f"Erro de posição (x - x_des): {x - x_des} [m]")
-    print(f"Força PID: {F_pos} [N]")
+    if state["prev_J"] is None:
+        J_dot = np.zeros_like(J)
+    else:
+        J_dot = (J - state["prev_J"]) / dt
 
-    # ----- torque final (sem estimação de força externa) -----
-    # J.T @ F_pos: transposto do Jacobiano (3x9) @ força (3)
-    # resultado: torque das juntas [N·m]
-    tau_cmd = J.T @ F_pos
+    if state["prev_q_dot"] is None:
+        q_dot_dot = np.zeros_like(q_dot)
+    else:
+        q_dot_dot = (q_dot - state["prev_q_dot"]) / dt
 
-    # ajustar tamanho
-    # model.nu: número de atuadores
-    tau_cmd = tau_cmd[:model.nu]
+    x_dot_dot = J @ q_dot_dot + J_dot @ q_dot
+    x_dot_dot_c = x_dot_dot_d + Kd_pos @ (x_dot_d - x_dot_pos) + Kp_pos @ (x_d - x)
+    J_pos = jacp
+    J_dot_pos = J_dot[:3, :]
+    J_dot_q_dot_pos = J_dot_pos @ q_dot
+    J_pos_pinv = J_pos.T @ np.linalg.solve(
+        J_pos @ J_pos.T + (lambda_pinv ** 2) * np.eye(3),
+        np.eye(3),
+    )
+    I_nv = np.eye(model.nv)
+    N = I_nv - J_pos_pinv @ J_pos
+    q_dot_dot_1 = J_pos_pinv @ (x_dot_dot_c - J_dot_q_dot_pos)
+    q_dot_dot_imp = q_dot_dot_d + np.linalg.solve(
+        Md_imp,
+        Bd_imp @ e_dot + Kd_imp @ e - tau_ext,
+    )
+    q_dot_dot_2 = N @ q_dot_dot_imp
+    q_dot_dot_cmd = q_dot_dot_1 + q_dot_dot_2
+    M = np.zeros((model.nv, model.nv))
+    mujoco.mj_fullM(model, M, data.qM)
+    bias = data.qfrc_bias.copy()
+    if state["compensate_gravity"]:
+        tau = M @ q_dot_dot_cmd + bias + tau_sim
+    else:
+        tau = M @ q_dot_dot_cmd + tau_sim
 
-    # limitar torque para segurança
-    # Unidades: [N·m] - limitado entre -100 e 100 N·m
-    tau_cmd = np.clip(tau_cmd, -100, 100)
+    if model.nu > 0:
+        data.ctrl[:] = tau[:model.nu]
+    else:
+        data.qfrc_applied[:] = tau
 
-    # aplicar comando de torque aos atuadores
-    # data.ctrl: sinal de controle [N·m]
-    data.ctrl[:] = tau_cmd
+    print(
+        f"Passo {state['step']} | x_dot = {np.round(x_dot, 4)} | "
+        f"x_dot_dot = {np.round(x_dot_dot, 4)} | "
+        f"x_dot_dot_c = {np.round(x_dot_dot_c, 4)} | "
+        f"q_dot_dot_1 = {np.round(q_dot_dot_1, 4)} | "
+        f"q_dot_dot_imp = {np.round(q_dot_dot_imp, 4)} | "
+        f"q_dot_dot_2 = {np.round(q_dot_dot_2, 4)} | "
+        f"q_dot_dot = {np.round(q_dot_dot_cmd, 4)} | "
+        f"|tau| = {np.linalg.norm(tau):.4f} | "
+        f"g_comp = {state['compensate_gravity']} | "
+        f"F_ext = {np.round(F_ext, 4)} | "
+        f"F_sim = {np.round(F_sim_current, 4)} | "
+        f"F_err = {np.round(F_err, 4)} | "
+        f"|x-x_des| = {np.linalg.norm(x - state['x_des']):.4f} | "
+        f"||N|| = {np.linalg.norm(N):.4f} | "
+        f"||e|| = {np.linalg.norm(e):.4f}"
+    )
 
-# =========================
-# 5. Simulação
-# =========================
-# Loop de simulação em tempo real
-# - controller(): calcula comando de torque baseado no estado atual
-# - mujoco.mj_step(): integra as equações dinâmicas (passo de tempo: padrão 0.002s)
-# - viewer.sync(): renderiza a posição atual do robô
+    state["prev_J"] = J.copy()
+    state["prev_q_dot"] = q_dot.copy()
+    state["step"] += 1
+
 with mujoco.viewer.launch_passive(model, data) as viewer:
+    mujoco.mj_forward(model, data)
+    controller_state = {
+        "step": step,
+        "prev_J": prev_J,
+        "prev_q_dot": prev_q_dot,
+        "q_d": data.qpos.copy(),
+        "x_des": x_des.copy(),
+        "F_d": F_des.copy(),
+        "enable_force_sim": ENABLE_FORCE_SIM,
+        "compensate_gravity": COMPENSATE_GRAVITY,
+        "F_sim_base": F_sim.copy(),
+        "force_z_ref": FORCE_Z_REF,
+        "force_z_decay": FORCE_Z_DECAY,
+        "e_force": e_force.copy(),
+        "e_dot_force": e_dot_force.copy(),
+    }
+
     while viewer.is_running():
+        multi_priority_controller(model, data, ee_id, controller_state)
 
-        controller(model, data)
+        viewer.user_scn.ngeom = 0
+        draw_marker_sphere(viewer, controller_state["x_des"], [1.0, 0.1, 0.1, 0.9], radius=0.02)
 
-        # Integra um passo de simulação [s]
-        # Tempo de integração: typically 0.002s (2ms)
         mujoco.mj_step(model, data)
 
         viewer.sync()
