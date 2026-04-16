@@ -1,0 +1,19 @@
+multi_priority_controller:
+  ros__parameters:
+    arm_id: panda
+
+    # ── Cable geometry ──────────────────────────────────────────────────────────
+    # Fixed anchor point in world (robot base) frame [x, y, z] in meters.
+    # MUST be measured and set for your specific setup before running.
+    anchor_position: [0.5, 0.0, 0.3]
+
+    # ── Task 1: Cable tension ────────────────────────────────────────────────────
+    desired_tension: 5.0    # [N]  target cable tension
+    tension_kp: 50.0        # [N/N]  proportional gain (torque per Newton of tension error)
+    tension_kd: 2.0         # [N·s/N]  derivative gain (tension rate damping)
+
+    # ── Task 2: EE pose tracking ─────────────────────────────────────────────────
+    ee_kp: 200.0            # [N/m]  position proportional gain
+    ee_kd: 20.0             # [N·s/m]  position derivative gain (velocity damping)
+    orientation_kp: 10.0   # [N·m/rad]  orientation proportional gain
+    orientation_kd: 1.0    # [N·m·s/rad]  orientation derivative gain

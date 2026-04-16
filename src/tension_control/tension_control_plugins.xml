@@ -1,0 +1,11 @@
+<library path="multi_priority_controller">
+  <class name="tension_control/MultiPriorityController"
+         type="tension_control::MultiPriorityController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      Multi-priority torque controller for cable manipulation on the Franka Panda.
+      Task 1 (primary): maintain desired cable tension to a fixed anchor in world frame.
+      Task 2 (secondary): track desired end-effector pose in the null-space of Task 1.
+    </description>
+  </class>
+</library>
