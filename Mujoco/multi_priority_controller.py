@@ -54,19 +54,20 @@ def pseudo_inverse(J: np.ndarray, damping: float = 1e-3) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 def get_ee_jacobian(model: mujoco.MjModel, data: mujoco.MjData,
-                    ee_site_name: str = "end_effector") -> np.ndarray:
-    """Jacobiano geométrico (6 × 7) do end-effector.
+                    ee_site_name: str = "end_effector",
+                    n_arm_dof: int = 7) -> np.ndarray:
+    """Jacobiano geométrico (6 × n_arm_dof) do end-effector.
 
     Linhas 0:3 = translacional, 3:6 = rotacional.
-    Retorna apenas as 7 colunas dos joints do robô.
+    Retorna apenas as n_arm_dof colunas dos joints do braço (ignora dedos e free joints).
     """
     nv   = model.nv
     Jt   = np.zeros((3, nv))
     Jr   = np.zeros((3, nv))
     sid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee_site_name)
     mujoco.mj_jacSite(model, data, Jt, Jr, sid)
-    J_full = np.vstack([Jt, Jr])   # (6, nv)
-    return J_full[:, :7]            # (6, 7) — apenas joints do robô
+    J_full = np.vstack([Jt, Jr])       # (6, nv)
+    return J_full[:, :n_arm_dof]        # (6, 7) — apenas joints do braço
 
 
 # ---------------------------------------------------------------------------
