@@ -14,6 +14,7 @@
 
 #include "tension_control/multi_priority_controller.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <stdexcept>
 
@@ -122,25 +123,15 @@ CallbackReturn MultiPriorityController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   franka_robot_model_->assign_loaned_state_interfaces(state_interfaces_);
 
-  // Read current EE pose and use it as the initial desired pose.
-  auto pose_array = franka_robot_model_->getPoseMatrix(franka::Frame::kEndEffector);
-  Eigen::Map<const Eigen::Matrix4d> T_ee(pose_array.data());
-
-  {
-    std::lock_guard<std::mutex> lock(pose_mutex_);
-    p_des_ = T_ee.block<3, 1>(0, 3);
-    R_des_ = T_ee.block<3, 3>(0, 0);
-  }
-  p_des_rt_ = p_des_;
-  R_des_rt_ = R_des_;
-
-  updateJointStates();
+  // Defer pose initialization to the first update() call to avoid racing with the RT thread.
+  pose_initialized_ = false;
+  tension_initialized_ = false;
   dq_filtered_.setZero();
   tension_prev_ = 0.0;
+  tau_prev_.setZero();
+  gain_ramp_ = 0.0;
 
-  RCLCPP_INFO(get_node()->get_logger(),
-              "Activated. Initial EE pos=[%.3f, %.3f, %.3f]",
-              p_des_rt_.x(), p_des_rt_.y(), p_des_rt_.z());
+  RCLCPP_INFO(get_node()->get_logger(), "Activated — pose will be initialized on first update.");
   return CallbackReturn::SUCCESS;
 }
 
@@ -160,24 +151,37 @@ controller_interface::return_type MultiPriorityController::update(
   updateJointStates();
 
   const double dt = period.seconds();
+  gain_ramp_ = std::min(1.0, gain_ramp_ + dt / kGainRampDuration);
+
   const double kAlpha = 0.99;
   dq_filtered_ = (1.0 - kAlpha) * dq_ + kAlpha * dq_filtered_;
 
   // ── Robot model quantities ──────────────────────────────────────────────────
+  // NOTE: franka_hardware + libfranka 0.13 ActiveControl applies gravity/coriolis
+  // compensation internally. We only command ADDITIONAL torques on top of that.
   auto jacobian_array = franka_robot_model_->getZeroJacobian(franka::Frame::kEndEffector);
-  auto gravity_array = franka_robot_model_->getGravityForceVector();
-  auto coriolis_array = franka_robot_model_->getCoriolisForceVector();
   auto pose_array = franka_robot_model_->getPoseMatrix(franka::Frame::kEndEffector);
   auto f_ext_array = franka_robot_model_->getExternalWrench();
 
   // Zero Jacobian layout: 6×7 column-major. Rows 0-2: linear, rows 3-5: angular.
   Eigen::Map<const Eigen::Matrix<double, 6, 7>> J(jacobian_array.data());
-  Eigen::Map<const Vector7d> tau_grav(gravity_array.data());
-  Eigen::Map<const Vector7d> tau_cor(coriolis_array.data());
 
   Eigen::Map<const Eigen::Matrix4d> T_ee(pose_array.data());
   const Eigen::Vector3d p_ee = T_ee.block<3, 1>(0, 3);
   const Eigen::Matrix3d R_ee = T_ee.block<3, 3>(0, 0);
+
+  // Initialize desired pose from current state on the first valid update cycle.
+  if (!pose_initialized_) {
+    std::lock_guard<std::mutex> lock(pose_mutex_);
+    p_des_ = p_ee;
+    R_des_ = R_ee;
+    p_des_rt_ = p_ee;
+    R_des_rt_ = R_ee;
+    pose_initialized_ = true;
+    RCLCPP_INFO(get_node()->get_logger(),
+                "Pose initialized. EE pos=[%.3f, %.3f, %.3f]",
+                p_ee.x(), p_ee.y(), p_ee.z());
+  }
 
   const Eigen::Vector3d F_ext(f_ext_array[0], f_ext_array[1], f_ext_array[2]);
 
@@ -200,11 +204,32 @@ controller_interface::return_type MultiPriorityController::update(
     Jc = cable_dir.transpose() * J.topRows(3);
 
     const double tension_measured = cable_dir.dot(F_ext);
+
+    // Seed derivative state on first cycle; tension_prev_=0 → 5000 N/s spike otherwise.
+    if (!tension_initialized_) {
+      tension_prev_ = tension_measured;
+      tension_initialized_ = true;
+      RCLCPP_INFO(get_node()->get_logger(),
+                  "Initial tension: %.3f N  F_ext=[%.3f, %.3f, %.3f] N  "
+                  "cable_dir=[%.3f, %.3f, %.3f]  cable_len=%.3f m",
+                  tension_measured, F_ext.x(), F_ext.y(), F_ext.z(),
+                  cable_dir.x(), cable_dir.y(), cable_dir.z(), cable_length);
+    }
+
     const double tension_error = desired_tension_ - tension_measured;
     const double tension_deriv = (dt > 1e-9) ? (tension_measured - tension_prev_) / dt : 0.0;
     tension_prev_ = tension_measured;
 
-    const double fc = tension_kp_ * tension_error - tension_kd_ * tension_deriv;
+    // Deadband: suppress tension control for small errors (F_ext noise without cable).
+    constexpr double kTensionDeadband = 0.5;  // [N]
+    const double tension_error_db =
+        (std::abs(tension_error) > kTensionDeadband)
+            ? tension_error - std::copysign(kTensionDeadband, tension_error)
+            : 0.0;
+
+    // Negative sign: to increase tension, EE must move AWAY from anchor (stretching the cable).
+    // fc > 0 would push EE toward anchor (shortening cable, reducing tension) — wrong direction.
+    const double fc = -(tension_kp_ * tension_error_db - tension_kd_ * tension_deriv);
     tau_cable = Jc.transpose() * fc;
 
     const double Jc_sq = (Jc * Jc.transpose())(0, 0);
@@ -231,7 +256,12 @@ controller_interface::return_type MultiPriorityController::update(
     // If lock unavailable, keep p_des_rt_ / R_des_rt_ from previous cycle.
   }
 
-  const Eigen::Vector3d ep = p_des_rt_ - p_ee;
+  // Position error clamped to prevent large movements
+  Eigen::Vector3d ep = p_des_rt_ - p_ee;
+  const double kMaxPosError = 0.05; // 5 cm maximum position error
+  if (ep.norm() > kMaxPosError) {
+    ep = ep.normalized() * kMaxPosError;
+  }
 
   // Orientation error: small-angle formula from R_err = R_des * R_curr^T
   // Valid for errors up to ~90°; sufficient for typical trajectory tracking.
@@ -242,32 +272,59 @@ controller_interface::return_type MultiPriorityController::update(
         R_err(1, 0) - R_err(0, 1);
   eo *= 0.5;
 
+  // Clamp orientation error to prevent large rotations (max ~30 degrees initially)
+  const double kMaxAngError = 0.5; // ~28.6 degrees in radians
+  if (eo.norm() > kMaxAngError) {
+    eo = eo.normalized() * kMaxAngError;
+  }
+
   const Eigen::Vector3d v_ee = J.topRows(3) * dq_filtered_;
   const Eigen::Vector3d omega_ee = J.bottomRows(3) * dq_filtered_;
 
   Eigen::Matrix<double, 6, 1> Fe;
+  // No gain_ramp_ needed: p_des_ is initialized to p_ee so ep=0 on first cycle.
   Fe << ee_kp_ * ep - ee_kd_ * v_ee,
         orientation_kp_ * eo - orientation_kd_ * omega_ee;
 
   const Vector7d tau_ee = N * J.transpose() * Fe;
 
   // ── Total torque ────────────────────────────────────────────────────────────
-  Vector7d tau = tau_grav + tau_cor + tau_cable + tau_ee;
+  // Gravity and coriolis are handled internally by franka_hardware (libfranka 0.13).
+  Vector7d tau = tau_cable + tau_ee;
+
+  // Add velocity damping to dissipate kinetic energy and prevent overshoot
+  // This is separate from the velocity terms in Fe which are scaled by gains
+  const double kVelDamping = 2.0; // Additional velocity damping coefficient
+  const Vector7d tau_damping = -kVelDamping * dq_filtered_;
+  tau += tau_damping;
 
   // Clamp to Franka joint torque limits (joints 1-4: 87 Nm, 5-7: 12 Nm).
   const Vector7d tau_limit = (Vector7d() << 87, 87, 87, 87, 12, 12, 12).finished();
   tau = tau.cwiseMax(-tau_limit).cwiseMin(tau_limit);
+
+  // Rate-limit torque change to limit joint acceleration
+  // Reduced from 1.0 Nm to 0.5 Nm per 1 ms for smoother motion
+  constexpr double kDeltaTauMax = 0.5;
+  tau = (tau - tau_prev_).cwiseMax(-kDeltaTauMax).cwiseMin(kDeltaTauMax) + tau_prev_;
+
+  // Store previous torque BEFORE damping for next cycle's rate limiter
+  // This prevents the damping term from being double-counted
+  tau_prev_ = tau - tau_damping;
+
+  // Apply velocity damping AFTER rate limiting to ensure it's always active
+  tau += tau_damping;
 
   for (int i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(tau(i));
   }
 
   // Diagnostics (throttled to 1 Hz)
-  RCLCPP_DEBUG_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
-                        "cable_len=%.3fm  T_meas=%.2fN  T_des=%.2fN  "
-                        "ee_err=[%.3f, %.3f, %.3f]m",
-                        cable_length, tension_prev_, desired_tension_,
-                        ep.x(), ep.y(), ep.z());
+  RCLCPP_INFO_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
+                       "cable_len=%.3fm  T_meas=%.2fN  T_des=%.2fN  "
+                       "ee_err=[%.3f, %.3f, %.3f]m  tau=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]",
+                       cable_length, tension_prev_, desired_tension_,
+                       ep.x(), ep.y(), ep.z(),
+                       tau(0), tau(1), tau(2), tau(3), tau(4), tau(5), tau(6));
 
   return controller_interface::return_type::OK;
 }

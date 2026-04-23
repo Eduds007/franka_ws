@@ -5,7 +5,7 @@ multi_priority_controller:
     # ── Cable geometry ──────────────────────────────────────────────────────────
     # Fixed anchor point in world (robot base) frame [x, y, z] in meters.
     # MUST be measured and set for your specific setup before running.
-    anchor_position: [0.5, 0.0, 0.3]
+    anchor_position: [0.5, 0.0, 0.3]  # TODO: measure physically in robot base frame before real cable run
 
     # ── Task 1: Cable tension ────────────────────────────────────────────────────
     desired_tension: 5.0    # [N]  target cable tension

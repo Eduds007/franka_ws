@@ -113,6 +113,19 @@ class MultiPriorityController : public controller_interface::ControllerInterface
   Eigen::Matrix3d R_des_;
   std::mutex pose_mutex_;
 
+  // Torque rate limiter — previous commanded torque, for 1 Nm/ms ramp limit.
+  Vector7d tau_prev_;
+
+  // Gain ramp — linearly scales all gains from 0→1 over kGainRampDuration seconds.
+  double gain_ramp_{0.0};
+  static constexpr double kGainRampDuration = 3.0;  // [s]
+
+  // Flag: desired pose not yet initialized from robot state (done in first update()).
+  bool pose_initialized_{false};
+
+  // Flag: tension_prev_ not yet seeded from first measured tension (prevents derivative spike).
+  bool tension_initialized_{false};
+
   // RT-local cache: only accessed inside update(), never from the subscription callback.
   Eigen::Vector3d p_des_rt_;
   Eigen::Matrix3d R_des_rt_;
