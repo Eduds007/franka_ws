@@ -95,10 +95,20 @@ class MultiPriorityController : public controller_interface::ControllerInterface
 
   // Task 1: Cable tension control
   Eigen::Vector3d anchor_position_;  // fixed anchor point in world frame [m]
-  double desired_tension_{0.0};      // [N]
+  double desired_tension_{0.0};      // target setpoint from parameter [N]
   double tension_kp_{0.0};
   double tension_kd_{0.0};
-  double tension_prev_{0.0};  // tension from previous step (for derivative)
+  double tension_prev_{0.0};       // tension from previous step (for derivative)
+  double tension_deriv_filt_{0.0}; // low-pass filtered tension derivative (F_ext is noisy)
+
+  // Setpoint ramp — captures the tension at activation and linearly ramps the
+  // active setpoint from there to desired_tension_ over kSetpointRampDuration
+  // seconds. Combined with gain_ramp_, this keeps the tension error ~0 during
+  // start-up so a pre-tensioned cable does not produce a step torque even when
+  // the gain is partially up.
+  double desired_tension_initial_{0.0};               // captured at first valid cycle [N]
+  double setpoint_ramp_{0.0};                         // 0 → 1 over kSetpointRampDuration
+  static constexpr double kSetpointRampDuration = 5.0; // [s]
 
   // Task 2: EE pose control
   double ee_kp_{0.0};

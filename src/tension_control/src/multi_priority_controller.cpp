@@ -128,6 +128,9 @@ CallbackReturn MultiPriorityController::on_activate(
   tension_initialized_ = false;
   dq_filtered_.setZero();
   tension_prev_ = 0.0;
+  tension_deriv_filt_ = 0.0;
+  desired_tension_initial_ = 0.0;
+  setpoint_ramp_ = 0.0;
   tau_prev_.setZero();
   gain_ramp_ = 0.0;
 
@@ -153,7 +156,9 @@ controller_interface::return_type MultiPriorityController::update(
   const double dt = period.seconds();
   gain_ramp_ = std::min(1.0, gain_ramp_ + dt / kGainRampDuration);
 
-  const double kAlpha = 0.99;
+  // ~10 ms time constant: smooths encoder differentiation noise without delaying
+  // the damping torque. kAlpha=0.99 gave ~100 ms, far too slow to oppose a runaway.
+  const double kAlpha = 0.9;
   dq_filtered_ = (1.0 - kAlpha) * dq_ + kAlpha * dq_filtered_;
 
   // ── Robot model quantities ──────────────────────────────────────────────────
@@ -205,20 +210,35 @@ controller_interface::return_type MultiPriorityController::update(
 
     const double tension_measured = cable_dir.dot(F_ext);
 
-    // Seed derivative state on first cycle; tension_prev_=0 → 5000 N/s spike otherwise.
+    // Seed derivative state and capture the starting setpoint on the first cycle.
+    // The setpoint is initialized to the *measured* tension so the error is exactly
+    // zero at activation, then linearly ramped toward the parameter value below.
     if (!tension_initialized_) {
       tension_prev_ = tension_measured;
+      desired_tension_initial_ = tension_measured;
       tension_initialized_ = true;
       RCLCPP_INFO(get_node()->get_logger(),
-                  "Initial tension: %.3f N  F_ext=[%.3f, %.3f, %.3f] N  "
-                  "cable_dir=[%.3f, %.3f, %.3f]  cable_len=%.3f m",
-                  tension_measured, F_ext.x(), F_ext.y(), F_ext.z(),
+                  "Initial tension: %.3f N  -> ramping setpoint to %.3f N over %.1f s. "
+                  "F_ext=[%.3f, %.3f, %.3f] N  cable_dir=[%.3f, %.3f, %.3f]  cable_len=%.3f m",
+                  tension_measured, desired_tension_, kSetpointRampDuration,
+                  F_ext.x(), F_ext.y(), F_ext.z(),
                   cable_dir.x(), cable_dir.y(), cable_dir.z(), cable_length);
     }
 
-    const double tension_error = desired_tension_ - tension_measured;
-    const double tension_deriv = (dt > 1e-9) ? (tension_measured - tension_prev_) / dt : 0.0;
+    // Advance the setpoint ramp and compute the active setpoint.
+    setpoint_ramp_ = std::min(1.0, setpoint_ramp_ + dt / kSetpointRampDuration);
+    const double desired_tension_rt =
+        desired_tension_initial_ + setpoint_ramp_ * (desired_tension_ - desired_tension_initial_);
+
+    const double tension_error = desired_tension_rt - tension_measured;
+    const double tension_deriv_raw = (dt > 1e-9) ? (tension_measured - tension_prev_) / dt : 0.0;
     tension_prev_ = tension_measured;
+
+    // Low-pass the derivative — O_F_ext_hat_K is noisy and Kd amplifies that noise by 1/dt.
+    // ~20 ms time constant; enough to suppress per-cycle spikes without killing damping.
+    constexpr double kDerivAlpha = 0.95;
+    tension_deriv_filt_ =
+        (1.0 - kDerivAlpha) * tension_deriv_raw + kDerivAlpha * tension_deriv_filt_;
 
     // Deadband: suppress tension control for small errors (F_ext noise without cable).
     constexpr double kTensionDeadband = 0.5;  // [N]
@@ -229,7 +249,16 @@ controller_interface::return_type MultiPriorityController::update(
 
     // Negative sign: to increase tension, EE must move AWAY from anchor (stretching the cable).
     // fc > 0 would push EE toward anchor (shortening cable, reducing tension) — wrong direction.
-    const double fc = -(tension_kp_ * tension_error_db - tension_kd_ * tension_deriv);
+    // gain_ramp_ scales the whole term so a pre-tensioned cable does not produce a step torque
+    // at activation (the original cause of immediate reflex aborts).
+    double fc = -gain_ramp_ * (tension_kp_ * tension_error_db - tension_kd_ * tension_deriv_filt_);
+
+    // Hard saturation on the cable force command — last-resort safety against any large
+    // residual error (e.g. operator perturbation, noise burst). Keeps joint torques bounded
+    // even if the user tunes Kp aggressively.
+    constexpr double kMaxCableForce = 20.0;  // [N]
+    fc = std::clamp(fc, -kMaxCableForce, kMaxCableForce);
+
     tau_cable = Jc.transpose() * fc;
 
     const double Jc_sq = (Jc * Jc.transpose())(0, 0);
@@ -282,47 +311,53 @@ controller_interface::return_type MultiPriorityController::update(
   const Eigen::Vector3d omega_ee = J.bottomRows(3) * dq_filtered_;
 
   Eigen::Matrix<double, 6, 1> Fe;
-  // No gain_ramp_ needed: p_des_ is initialized to p_ee so ep=0 on first cycle.
-  Fe << ee_kp_ * ep - ee_kd_ * v_ee,
-        orientation_kp_ * eo - orientation_kd_ * omega_ee;
+  // gain_ramp_ scales proportional terms so the secondary task ramps in alongside Task 1.
+  // Derivative terms are not ramped — they should always damp motion.
+  Fe << gain_ramp_ * ee_kp_ * ep - ee_kd_ * v_ee,
+        gain_ramp_ * orientation_kp_ * eo - orientation_kd_ * omega_ee;
 
   const Vector7d tau_ee = N * J.transpose() * Fe;
 
   // ── Total torque ────────────────────────────────────────────────────────────
-  // Gravity and coriolis are handled internally by franka_hardware (libfranka 0.13).
-  Vector7d tau = tau_cable + tau_ee;
+  // Gravity and Coriolis are compensated internally by franka_hardware (libfranka 0.13).
+  //
+  // Order matters here:
+  //   1. Clamp the smooth control torque to joint limits.
+  //   2. Rate-limit the smooth control torque (anti-jerk).
+  //   3. Add velocity damping AFTER the rate limiter so it can react instantly to
+  //      sudden motion (a rate-limited damping cannot oppose a runaway in time).
+  //   4. Final clamp to joint limits (damping + control may exceed them together).
+  //
+  // The previous version added damping before the rate limiter and again after, which
+  // double-counted it and bypassed both the rate limiter and the torque clamp.
+  Vector7d tau_control = tau_cable + tau_ee;
 
-  // Add velocity damping to dissipate kinetic energy and prevent overshoot
-  // This is separate from the velocity terms in Fe which are scaled by gains
-  const double kVelDamping = 2.0; // Additional velocity damping coefficient
-  const Vector7d tau_damping = -kVelDamping * dq_filtered_;
-  tau += tau_damping;
-
-  // Clamp to Franka joint torque limits (joints 1-4: 87 Nm, 5-7: 12 Nm).
   const Vector7d tau_limit = (Vector7d() << 87, 87, 87, 87, 12, 12, 12).finished();
-  tau = tau.cwiseMax(-tau_limit).cwiseMin(tau_limit);
+  tau_control = tau_control.cwiseMax(-tau_limit).cwiseMin(tau_limit);
 
-  // Rate-limit torque change to limit joint acceleration
-  // Reduced from 1.0 Nm to 0.5 Nm per 1 ms for smoother motion
-  constexpr double kDeltaTauMax = 0.5;
-  tau = (tau - tau_prev_).cwiseMax(-kDeltaTauMax).cwiseMin(kDeltaTauMax) + tau_prev_;
+  constexpr double kDeltaTauMax = 0.5;  // [Nm] per 1 ms cycle (= 500 Nm/s)
+  tau_control =
+      (tau_control - tau_prev_).cwiseMax(-kDeltaTauMax).cwiseMin(kDeltaTauMax) + tau_prev_;
+  tau_prev_ = tau_control;
 
-  // Store previous torque BEFORE damping for next cycle's rate limiter
-  // This prevents the damping term from being double-counted
-  tau_prev_ = tau - tau_damping;
-
-  // Apply velocity damping AFTER rate limiting to ensure it's always active
-  tau += tau_damping;
+  constexpr double kVelDamping = 2.0;
+  const Vector7d tau_damping = -kVelDamping * dq_filtered_;
+  Vector7d tau = (tau_control + tau_damping).cwiseMax(-tau_limit).cwiseMin(tau_limit);
 
   for (int i = 0; i < kNumJoints; ++i) {
     command_interfaces_[i].set_value(tau(i));
   }
 
-  // Diagnostics (throttled to 1 Hz)
+  // Diagnostics (throttled to 1 Hz). T_des_rt is the active (ramped) setpoint; the
+  // ramp factors expose how much of each safety ramp is currently active.
+  const double T_des_rt =
+      desired_tension_initial_ + setpoint_ramp_ * (desired_tension_ - desired_tension_initial_);
   RCLCPP_INFO_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
-                       "cable_len=%.3fm  T_meas=%.2fN  T_des=%.2fN  "
+                       "cable_len=%.3fm  T_meas=%.2fN  T_des_rt=%.2fN  T_des=%.2fN  "
+                       "gain_ramp=%.2f  setpoint_ramp=%.2f  "
                        "ee_err=[%.3f, %.3f, %.3f]m  tau=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]",
-                       cable_length, tension_prev_, desired_tension_,
+                       cable_length, tension_prev_, T_des_rt, desired_tension_,
+                       gain_ramp_, setpoint_ramp_,
                        ep.x(), ep.y(), ep.z(),
                        tau(0), tau(1), tau(2), tau(3), tau(4), tau(5), tau(6));
 
