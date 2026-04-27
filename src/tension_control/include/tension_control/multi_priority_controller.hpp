@@ -43,6 +43,20 @@ class FrankaRobotModelWithState : public franka_semantic_components::FrankaRobot
             robot_state->O_F_ext_hat_K[2], robot_state->O_F_ext_hat_K[3],
             robot_state->O_F_ext_hat_K[4], robot_state->O_F_ext_hat_K[5]};
   }
+
+  // libfranka's joint-space external-torque estimate (gravity/coriolis-compensated,
+  // low-pass filtered). On this rig O_F_ext_hat_K is reported as identically zero,
+  // but tau_ext_hat_filtered is alive — the controller recovers Cartesian force from
+  // it by least-squares through the Jacobian.
+  std::array<double, 7> getJointExternalTorque() {
+    if (!initialized) {
+      initialize();
+    }
+    return {robot_state->tau_ext_hat_filtered[0], robot_state->tau_ext_hat_filtered[1],
+            robot_state->tau_ext_hat_filtered[2], robot_state->tau_ext_hat_filtered[3],
+            robot_state->tau_ext_hat_filtered[4], robot_state->tau_ext_hat_filtered[5],
+            robot_state->tau_ext_hat_filtered[6]};
+  }
 };
 
 /**
@@ -135,6 +149,12 @@ class MultiPriorityController : public controller_interface::ControllerInterface
 
   // Flag: tension_prev_ not yet seeded from first measured tension (prevents derivative spike).
   bool tension_initialized_{false};
+
+  // Cartesian-force tare. The joint-space residual tau_ext_hat_filtered has a baseline
+  // offset from gravity/payload mismodel and friction, so the projected F_ext shows
+  // several N of phantom force at rest. We capture F_ext on the first valid cycle and
+  // subtract it on every subsequent cycle, so the controller sees ΔF from activation.
+  Eigen::Vector3d F_ext_offset_{Eigen::Vector3d::Zero()};
 
   // RT-local cache: only accessed inside update(), never from the subscription callback.
   Eigen::Vector3d p_des_rt_;

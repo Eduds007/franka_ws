@@ -133,6 +133,7 @@ CallbackReturn MultiPriorityController::on_activate(
   setpoint_ramp_ = 0.0;
   tau_prev_.setZero();
   gain_ramp_ = 0.0;
+  F_ext_offset_.setZero();
 
   RCLCPP_INFO(get_node()->get_logger(), "Activated — pose will be initialized on first update.");
   return CallbackReturn::SUCCESS;
@@ -166,7 +167,7 @@ controller_interface::return_type MultiPriorityController::update(
   // compensation internally. We only command ADDITIONAL torques on top of that.
   auto jacobian_array = franka_robot_model_->getZeroJacobian(franka::Frame::kEndEffector);
   auto pose_array = franka_robot_model_->getPoseMatrix(franka::Frame::kEndEffector);
-  auto f_ext_array = franka_robot_model_->getExternalWrench();
+  auto tau_ext_array = franka_robot_model_->getJointExternalTorque();
 
   // Zero Jacobian layout: 6×7 column-major. Rows 0-2: linear, rows 3-5: angular.
   Eigen::Map<const Eigen::Matrix<double, 6, 7>> J(jacobian_array.data());
@@ -188,7 +189,16 @@ controller_interface::return_type MultiPriorityController::update(
                 p_ee.x(), p_ee.y(), p_ee.z());
   }
 
-  const Eigen::Vector3d F_ext(f_ext_array[0], f_ext_array[1], f_ext_array[2]);
+  // Recover the Cartesian external force from the joint-space residual:
+  //   tau_ext ≈ J_linᵀ · F_ext   (ignoring external moments at the EE)
+  //   F_ext   ≈ (J_lin · J_linᵀ + λI)⁻¹ · J_lin · tau_ext   (damped least-squares)
+  // O_F_ext_hat_K reads zero on this rig despite tau_ext_hat_filtered being alive,
+  // so we project the joint-space estimate ourselves.
+  const Eigen::Map<const Vector7d> tau_ext(tau_ext_array.data());
+  const auto J_lin = J.topRows(3);
+  const Eigen::Matrix3d JJT =
+      J_lin * J_lin.transpose() + 1e-6 * Eigen::Matrix3d::Identity();
+  const Eigen::Vector3d F_ext_raw = JJT.ldlt().solve(J_lin * tau_ext);
 
   // ── Task 1: Cable tension (primary) ────────────────────────────────────────
   //
@@ -208,21 +218,28 @@ controller_interface::return_type MultiPriorityController::update(
 
     Jc = cable_dir.transpose() * J.topRows(3);
 
-    const double tension_measured = cable_dir.dot(F_ext);
+    // First valid cycle: tare the Cartesian-force estimate so the controller sees
+    // ΔF from this moment onward. Recompute the corrected F_ext locally so this
+    // cycle's tension reading is also zero (instead of using the pre-tare value).
+    if (!tension_initialized_) {
+      F_ext_offset_ = F_ext_raw;
+    }
+    const Eigen::Vector3d F_ext_corrected = F_ext_raw - F_ext_offset_;
+    const double tension_measured = cable_dir.dot(F_ext_corrected);
 
     // Seed derivative state and capture the starting setpoint on the first cycle.
-    // The setpoint is initialized to the *measured* tension so the error is exactly
-    // zero at activation, then linearly ramped toward the parameter value below.
+    // After taring, tension_measured is exactly 0 — the setpoint ramp goes from
+    // 0 → desired_tension_ over kSetpointRampDuration.
     if (!tension_initialized_) {
       tension_prev_ = tension_measured;
       desired_tension_initial_ = tension_measured;
       tension_initialized_ = true;
       RCLCPP_INFO(get_node()->get_logger(),
-                  "Initial tension: %.3f N  -> ramping setpoint to %.3f N over %.1f s. "
-                  "F_ext=[%.3f, %.3f, %.3f] N  cable_dir=[%.3f, %.3f, %.3f]  cable_len=%.3f m",
-                  tension_measured, desired_tension_, kSetpointRampDuration,
-                  F_ext.x(), F_ext.y(), F_ext.z(),
-                  cable_dir.x(), cable_dir.y(), cable_dir.z(), cable_length);
+                  "Tared. F_ext_offset=[%.3f, %.3f, %.3f] N  cable_dir=[%.3f, %.3f, %.3f]  "
+                  "cable_len=%.3f m  -> ramping tension setpoint from 0 to %.3f N over %.1f s.",
+                  F_ext_offset_.x(), F_ext_offset_.y(), F_ext_offset_.z(),
+                  cable_dir.x(), cable_dir.y(), cable_dir.z(), cable_length,
+                  desired_tension_, kSetpointRampDuration);
     }
 
     // Advance the setpoint ramp and compute the active setpoint.
@@ -355,9 +372,12 @@ controller_interface::return_type MultiPriorityController::update(
   RCLCPP_INFO_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
                        "cable_len=%.3fm  T_meas=%.2fN  T_des_rt=%.2fN  T_des=%.2fN  "
                        "gain_ramp=%.2f  setpoint_ramp=%.2f  "
+                       "F_ext_raw=[%.2f,%.2f,%.2f]N  F_offset=[%.2f,%.2f,%.2f]N  "
                        "ee_err=[%.3f, %.3f, %.3f]m  tau=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]",
                        cable_length, tension_prev_, T_des_rt, desired_tension_,
                        gain_ramp_, setpoint_ramp_,
+                       F_ext_raw.x(), F_ext_raw.y(), F_ext_raw.z(),
+                       F_ext_offset_.x(), F_ext_offset_.y(), F_ext_offset_.z(),
                        ep.x(), ep.y(), ep.z(),
                        tau(0), tau(1), tau(2), tau(3), tau(4), tau(5), tau(6));
 
