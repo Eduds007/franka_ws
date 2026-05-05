@@ -225,7 +225,14 @@ controller_interface::return_type MultiPriorityController::update(
       F_ext_offset_ = F_ext_raw;
     }
     const Eigen::Vector3d F_ext_corrected = F_ext_raw - F_ext_offset_;
-    const double tension_measured = cable_dir.dot(F_ext_corrected);
+    // Cable tension is a magnitude — a real cable can only pull, never push, so the
+    // sign of the projection along cable_dir carries no physical meaning here.
+    // Using |projection| lets a measurement of 8 N produce error = 10 − 8 = 2 N
+    // regardless of which side of the tare baseline the residual landed on.
+    // The fc direction logic below still reduces to "push EE away from anchor when
+    // error > 0", because increasing |EE − anchor| stretches the cable, which is
+    // the one and only way to raise tension.
+    const double tension_measured = std::abs(cable_dir.dot(F_ext_corrected));
 
     // Seed derivative state and capture the starting setpoint on the first cycle.
     // After taring, tension_measured is exactly 0 — the setpoint ramp goes from
