@@ -128,7 +128,9 @@ CallbackReturn MultiPriorityController::on_activate(
   tension_initialized_ = false;
   dq_filtered_.setZero();
   tension_prev_ = 0.0;
+  tension_filt_ = 0.0;
   tension_deriv_filt_ = 0.0;
+  fc_prev_ = 0.0;
   desired_tension_initial_ = 0.0;
   setpoint_ramp_ = 0.0;
   tau_prev_.setZero();
@@ -232,7 +234,21 @@ controller_interface::return_type MultiPriorityController::update(
     // The fc direction logic below still reduces to "push EE away from anchor when
     // error > 0", because increasing |EE − anchor| stretches the cable, which is
     // the one and only way to raise tension.
-    const double tension_measured = std::abs(cable_dir.dot(F_ext_corrected));
+    const double tension_measured_raw = std::abs(cable_dir.dot(F_ext_corrected));
+
+    // Low-pass the tension measurement before it enters the proportional path.
+    // F_ext is reconstructed from tau_ext_hat by least-squares, and that residual
+    // carries several N of broadband noise. Without smoothing here, Kp · noise
+    // produces visible end-effector vibration around the desired pose. ~50 ms
+    // time constant: short enough to follow real cable dynamics (which evolve on
+    // hundreds of ms), long enough to suppress per-cycle spikes from the residual.
+    constexpr double kTensionAlpha = 0.98;  // ~50 ms TC at 1 kHz
+    if (!tension_initialized_) {
+      tension_filt_ = tension_measured_raw;
+    } else {
+      tension_filt_ = (1.0 - kTensionAlpha) * tension_measured_raw + kTensionAlpha * tension_filt_;
+    }
+    const double tension_measured = tension_filt_;
 
     // Seed derivative state and capture the starting setpoint on the first cycle.
     // After taring, tension_measured is exactly 0 — the setpoint ramp goes from
@@ -277,11 +293,25 @@ controller_interface::return_type MultiPriorityController::update(
     // at activation (the original cause of immediate reflex aborts).
     double fc = -gain_ramp_ * (tension_kp_ * tension_error_db - tension_kd_ * tension_deriv_filt_);
 
+    // Rate-limit fc. The cable has a one-sided constraint (T ≥ 0): when the EE
+    // is closer than the cable's natural length the cable goes slack and T → 0,
+    // and beyond that distance T grows with extension. The slack↔taut boundary
+    // is non-smooth, so a fast-changing fc can drive the EE across it
+    // repeatedly, producing a limit cycle (slack → drop in T → push hard →
+    // overshoot → taut → spike in T → pull back → slack …). 50 N/s lets fc
+    // reach saturation in ~0.4 s — slow enough that the EE physically moves
+    // along cable_dir without slamming the boundary, fast enough to track the
+    // setpoint within a few seconds.
+    constexpr double kMaxFcRate = 50.0;          // [N/s]
+    const double max_dfc = kMaxFcRate * dt;       // per-cycle cap
+    fc = std::clamp(fc - fc_prev_, -max_dfc, max_dfc) + fc_prev_;
+
     // Hard saturation on the cable force command — last-resort safety against any large
     // residual error (e.g. operator perturbation, noise burst). Keeps joint torques bounded
     // even if the user tunes Kp aggressively.
     constexpr double kMaxCableForce = 20.0;  // [N]
     fc = std::clamp(fc, -kMaxCableForce, kMaxCableForce);
+    fc_prev_ = fc;
 
     tau_cable = Jc.transpose() * fc;
 
@@ -364,7 +394,13 @@ controller_interface::return_type MultiPriorityController::update(
       (tau_control - tau_prev_).cwiseMax(-kDeltaTauMax).cwiseMin(kDeltaTauMax) + tau_prev_;
   tau_prev_ = tau_control;
 
-  constexpr double kVelDamping = 2.0;
+  // Joint-velocity damping. With the tension LPF in place, the proportional
+  // path lags by ~50 ms, so saturated cable forces persist briefly in one
+  // direction. Without enough joint damping the integrated velocity exceeds
+  // libfranka's reflex threshold (~2 rad/s on shoulder joints). 6 Nm·s/rad
+  // gives a stable margin: at 1 rad/s the damping torque already cancels a
+  // saturated commanded torque.
+  constexpr double kVelDamping = 6.0;
   const Vector7d tau_damping = -kVelDamping * dq_filtered_;
   Vector7d tau = (tau_control + tau_damping).cwiseMax(-tau_limit).cwiseMin(tau_limit);
 

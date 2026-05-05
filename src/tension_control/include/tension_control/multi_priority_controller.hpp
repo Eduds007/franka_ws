@@ -112,8 +112,10 @@ class MultiPriorityController : public controller_interface::ControllerInterface
   double desired_tension_{0.0};      // target setpoint from parameter [N]
   double tension_kp_{0.0};
   double tension_kd_{0.0};
-  double tension_prev_{0.0};       // tension from previous step (for derivative)
+  double tension_prev_{0.0};       // filtered tension from previous step (for derivative)
+  double tension_filt_{0.0};       // low-pass filtered tension measurement (kills proportional vibration)
   double tension_deriv_filt_{0.0}; // low-pass filtered tension derivative (F_ext is noisy)
+  double fc_prev_{0.0};            // previous cable force command, for rate-limiting fc
 
   // Setpoint ramp — captures the tension at activation and linearly ramps the
   // active setpoint from there to desired_tension_ over kSetpointRampDuration
