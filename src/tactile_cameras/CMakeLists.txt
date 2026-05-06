@@ -41,6 +41,7 @@ install(PROGRAMS
   src/gelsight_detector_debug.py
   src/tactile_contact_analyzer.py
   src/cable_pose_estimator.py
+  scripts/cable_detector.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
