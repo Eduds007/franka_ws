@@ -19,7 +19,7 @@ cable_grasp_orchestrator:
     controller_manager_name: controller_manager
     approach_controller: joint_trajectory_controller
     tension_controller: multi_priority_controller
-    desired_tension: 10.0          # [N] — pushed to multi_priority_controller via SetParameters
+    desired_tension: 5.0           # [N] — pushed to multi_priority_controller via SetParameters
 
     # Wait for the controller's gain & setpoint ramp before publishing trajectory.
     # Must be >= multi_priority_controller's kSetpointRampDuration (5.0s).

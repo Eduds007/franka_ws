@@ -40,14 +40,13 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
 from control_msgs.action import GripperCommand
+from controller_manager_msgs.srv import SwitchController
 from franka_msgs.msg import FrankaRobotState
 from geometry_msgs.msg import PoseStamped
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
-
-from controller_manager.controller_manager_services import switch_controllers
 
 try:
     from pymoveit2 import MoveIt2, MoveIt2State
@@ -75,7 +74,8 @@ class State(Enum):
 
 
 # robot_mode value emitted by FrankaRobotState during normal motion
-ROBOT_MODE_MOVE = 5
+# (must match FrankaRobotState.msg ROBOT_MODE_MOVE)
+ROBOT_MODE_MOVE = 2
 
 
 class CableGraspOrchestrator(Node):
@@ -153,6 +153,9 @@ class CableGraspOrchestrator(Node):
         self._approach_controller = self.get_parameter("approach_controller").value
         self.set_params_client = self.create_client(
             SetParameters, f"/{self._tension_controller}/set_parameters",
+            callback_group=self._cb)
+        self.switch_ctrl_client = self.create_client(
+            SwitchController, f"/{self._cm_name}/switch_controller",
             callback_group=self._cb)
 
         # Publisher for the controller's desired EE pose (used by trajectory)
@@ -370,18 +373,37 @@ class CableGraspOrchestrator(Node):
 
     def _switch_worker(self, deactivate_name: str, activate_name: str):
         try:
-            switch_controllers(
-                self, self._cm_name,
-                deactivate_controllers=[deactivate_name] if deactivate_name else [],
-                activate_controllers=[activate_name] if activate_name else [],
-                strict=False, activate_asap=False, timeout=2.0,
-            )
+            self._switch_blocking(deactivate_name, activate_name)
             self._async_ok = True
         except Exception as e:
-            self.get_logger().error(f"switch_worker {deactivate_name}→{activate_name}: {e}")
+            self.get_logger().error(
+                f"switch_worker {deactivate_name}→{activate_name}: {e}")
             self._async_ok = False
         finally:
             self._async_done = True
+
+    def _switch_blocking(self, deactivate_name: str, activate_name: str):
+        if not self.switch_ctrl_client.wait_for_service(timeout_sec=3.0):
+            raise RuntimeError(
+                f"switch_controller service /{self._cm_name} unavailable")
+        req = SwitchController.Request()
+        req.deactivate_controllers = [deactivate_name] if deactivate_name else []
+        req.activate_controllers = [activate_name] if activate_name else []
+        req.strictness = SwitchController.Request.BEST_EFFORT
+        req.activate_asap = False
+        req.timeout.sec = 2
+        req.timeout.nanosec = 0
+        fut = self.switch_ctrl_client.call_async(req)
+        t0 = self.get_clock().now()
+        while not fut.done() and (self.get_clock().now() - t0).nanoseconds * 1e-9 < 8.0:
+            time.sleep(0.05)  # MultiThreadedExecutor spins this future for us
+        if not fut.done():
+            raise RuntimeError("switch_controller timed out")
+        resp = fut.result()
+        if resp is None or not resp.ok:
+            raise RuntimeError(
+                f"switch_controller returned ok=False (deactivate={req.deactivate_controllers}, "
+                f"activate={req.activate_controllers})")
 
     def _st_wait_ramp(self):
         ramp_s = float(self.get_parameter("ramp_wait_s").value)
@@ -512,11 +534,9 @@ class CableGraspOrchestrator(Node):
             if self._traj_thread is not None and self._traj_thread.is_alive():
                 self._traj_thread.join(timeout=1.5)
             try:
-                switch_controllers(
-                    self, self._cm_name,
-                    deactivate_controllers=[self._tension_controller],
-                    activate_controllers=[self._approach_controller],
-                    strict=False, activate_asap=False, timeout=2.0)
+                self._switch_blocking(
+                    deactivate_name=self._tension_controller,
+                    activate_name=self._approach_controller)
             except Exception as e:
                 self.get_logger().warn(f"abort: switch back failed: {e}")
             try:
