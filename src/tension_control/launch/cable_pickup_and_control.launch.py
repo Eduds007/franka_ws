@@ -199,6 +199,40 @@ def generate_launch_description():
         condition=IfCondition(use_rviz),
     )
 
+    # ── GelSight cameras + cable pose estimators ───────────────────────────────
+    camera_publisher_node = Node(
+        package='tactile_cameras',
+        executable='camera_publisher.py',
+        name='gelsight_camera_publisher',
+        output='screen',
+        parameters=[{
+            'camera1_id': 0,
+            'camera2_id': 2,
+            'fps': 30.0,
+            'width': 640,
+            'height': 480,
+        }],
+    )
+    cable_pose_estimator_cam1 = Node(
+        package='tactile_cameras',
+        executable='cable_pose_estimator.py',
+        name='cable_pose_estimator_cam1',
+        output='screen',
+        parameters=[{
+            'camera_topic': '/gelsight_cam1/image_raw',
+            'diff_threshold': 5,         # default 10 — more sensitive
+            'min_contour_area': 100,     # default 500 — accept smaller blobs
+            'border_size': 60,           # default 120 — narrower border mask
+        }],
+    )
+    cable_pose_estimator_cam2 = Node(
+        package='tactile_cameras',
+        executable='cable_pose_estimator.py',
+        name='cable_pose_estimator_cam2',
+        output='screen',
+        parameters=[{'camera_topic': '/gelsight_cam2/image_raw'}],
+    )
+
     # ── Orchestrator (FSM) ─────────────────────────────────────────────────────
     orchestrator_node = TimerAction(
         period=10.0,
@@ -224,5 +258,7 @@ def generate_launch_description():
         mpc_loader,
         move_group_node,
         rviz_node,
+        camera_publisher_node,
+        cable_pose_estimator_cam1,
         orchestrator_node,
     ])

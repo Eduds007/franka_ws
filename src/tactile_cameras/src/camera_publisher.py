@@ -46,42 +46,57 @@ class CameraPublisherNode(Node):
     def setup_cameras(self):
         """Setup cameras"""
         self.get_logger().info("🔧 Setting up cameras...")
-        
-        # Try to open camera 1
-        try:
-            self.cap1 = cv2.VideoCapture(self.camera1_id)
-            if self.cap1.isOpened():
-                self.cap1.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                self.cap1.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                self.cap1.set(cv2.CAP_PROP_FPS, self.fps)
-                self.get_logger().info(f"✅ Camera 1 opened (ID: {self.camera1_id})")
-            else:
-                self.get_logger().warn(f"⚠️ Cannot open camera 1 (ID: {self.camera1_id})")
-                self.cap1 = None
-        except Exception as e:
-            self.get_logger().error(f"❌ Error opening camera 1: {e}")
-            self.cap1 = None
-        
-        # Try to open camera 2
-        try:
-            self.cap2 = cv2.VideoCapture(self.camera2_id)
-            if self.cap2.isOpened():
-                self.cap2.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-                self.cap2.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-                self.cap2.set(cv2.CAP_PROP_FPS, self.fps)
-                self.get_logger().info(f"✅ Camera 2 opened (ID: {self.camera2_id})")
-            else:
-                self.get_logger().warn(f"⚠️ Cannot open camera 2 (ID: {self.camera2_id})")
-                self.cap2 = None
-        except Exception as e:
-            self.get_logger().error(f"❌ Error opening camera 2: {e}")
-            self.cap2 = None
-        
-        # Check if at least one camera is available
+
+        # GelSight Mini exposes two /dev/videoN nodes per camera; only one is
+        # actually capturable. USB re-enumeration also swaps indices between
+        # boots. Probe the configured id first, then fall back to the other
+        # candidate in {0, 1, 2, 3} until read() returns a frame.
+        self.cap1, used1 = self._open_first_working(
+            preferred=self.camera1_id, candidates=[0, 1, 2, 3], label="camera 1")
+        if self.cap1 is not None:
+            self.camera1_id = used1
+
+        # Skip camera 2 if it would alias camera 1 (single-camera mode).
+        cam2_candidates = [i for i in [2, 3, 0, 1] if i != self.camera1_id]
+        self.cap2, used2 = self._open_first_working(
+            preferred=self.camera2_id, candidates=cam2_candidates, label="camera 2")
+        if self.cap2 is not None:
+            self.camera2_id = used2
+
         if self.cap1 is None and self.cap2 is None:
             self.get_logger().warn("⚠️ No cameras available - will publish dummy frames")
             self.setup_dummy_mode()
-    
+
+    def _open_first_working(self, preferred, candidates, label):
+        """Try the preferred id first, then each candidate; return (cap, id_used).
+        A capture is 'working' only if isOpened() and read() returns a frame."""
+        seen = set()
+        order = [preferred] + [c for c in candidates if c != preferred]
+        for idx in order:
+            if idx in seen:
+                continue
+            seen.add(idx)
+            try:
+                cap = cv2.VideoCapture(f"/dev/video{idx}", cv2.CAP_V4L2)
+                if not cap.isOpened():
+                    cap.release()
+                    self.get_logger().warn(f"⚠️ {label}: /dev/video{idx} not openable")
+                    continue
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                cap.set(cv2.CAP_PROP_FPS, self.fps)
+                ok, _ = cap.read()
+                if not ok:
+                    cap.release()
+                    self.get_logger().warn(f"⚠️ {label}: /dev/video{idx} opened but read failed")
+                    continue
+                self.get_logger().info(f"✅ {label} opened (ID: {idx})")
+                return cap, idx
+            except Exception as e:
+                self.get_logger().error(f"❌ {label} /dev/video{idx} error: {e}")
+        self.get_logger().warn(f"⚠️ {label}: no working device found")
+        return None, None
+
     def setup_dummy_mode(self):
         """Setup dummy camera mode"""
         self.get_logger().info("🎮 Setting up dummy camera mode")
@@ -109,6 +124,9 @@ class CameraPublisherNode(Node):
         if self.cap1 is not None and self.cap1.isOpened():
             ret1, frame1 = self.cap1.read()
             if ret1:
+                # GelSight Mini ignores CAP_PROP_FRAME_HEIGHT — force resize.
+                if frame1.shape[0] != self.height or frame1.shape[1] != self.width:
+                    frame1 = cv2.resize(frame1, (self.width, self.height))
                 # Add timestamp
                 timestamp_str = f"Cam1: {current_time.nanoseconds // 1000000}"
                 cv2.putText(frame1, timestamp_str, (10, self.height - 20), 

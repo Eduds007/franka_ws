@@ -12,8 +12,8 @@ cable_grasp_orchestrator:
     cable_diameter: 0.005          # [m] — gripper closes to ~70% of this
 
     # Gripper
-    gripper_open_pos: 0.08         # [m]
-    gripper_close_effort: 20.0     # [N]
+    gripper_open_pos: 0.04         # [m] — per-finger (driver doubles to total width 0.08)
+    gripper_close_effort: 40.0     # [N] — Panda sustained grasp force
 
     # Controllers
     controller_manager_name: controller_manager
@@ -36,3 +36,10 @@ cable_grasp_orchestrator:
     # MoveIt motion limits for approach moves (grasp + home transitions)
     moveit.max_velocity: 0.2
     moveit.max_acceleration: 0.2
+
+    # GelSight contact monitoring — armed after CLOSE_GRIPPER. If contact is
+    # lost (no True message within timeout_ms) the FSM aborts.
+    contact_check.enabled: true
+    contact_check.require_both: false
+    contact_check.timeout_ms: 300
+    contact_check.cam_namespaces: ["cable_pose_estimator_cam1"]

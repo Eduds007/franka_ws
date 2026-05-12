@@ -2,15 +2,17 @@
 """Cable grasp orchestrator (deterministic, image-free).
 
 Sequence:
-  1. MOVE_HOME_INIT  — go to predefined home pose (MoveIt).
-  2. MOVE_TO_GRASP   — go to predefined grasp pose (MoveIt).
-  3. CLOSE_GRIPPER   — close on the cable.
-  4. MOVE_HOME_FINAL — go back to home pose with cable held (MoveIt).
-  5. DERIVE_ANCHOR   — compute anchor_position from the home EE pose + cable length.
-  6. SET_PARAMS      — push anchor_position and desired_tension into the controller.
-  7. SWITCH_CTRL     — deactivate JTC, activate multi_priority_controller.
-  8. WAIT_RAMP       — wait for the controller's gain & setpoint ramp.
-  9. RUN_TRAJECTORY  — publish a circular trajectory while tension is held.
+  1. OPEN_GRIPPER_INIT — open the gripper before homing (clears any prior grasp).
+  2. MOVE_HOME_INIT    — go to predefined home pose (MoveIt).
+  3. CAPTURE_REF       — capture GelSight reference frames for contact monitoring.
+  4. MOVE_TO_GRASP     — go to predefined grasp pose (MoveIt).
+  5. CLOSE_GRIPPER     — close on the cable.
+  6. MOVE_HOME_FINAL   — go back to home pose with cable held (MoveIt).
+  7. DERIVE_ANCHOR     — compute anchor_position from the home EE pose + cable length.
+  8. SET_PARAMS        — push anchor_position and desired_tension into the controller.
+  9. SWITCH_CTRL       — deactivate JTC, activate multi_priority_controller.
+ 10. WAIT_RAMP         — wait for the controller's gain & setpoint ramp.
+ 11. RUN_TRAJECTORY    — publish a circular trajectory while tension is held.
 
 This file is the only place where we orchestrate; multi_priority_controller.cpp
 is untouched.
@@ -41,11 +43,12 @@ from rclpy.qos import qos_profile_sensor_data
 
 from control_msgs.action import GripperCommand
 from controller_manager_msgs.srv import SwitchController
+from franka_msgs.action import Homing, Move
 from franka_msgs.msg import FrankaRobotState
 from geometry_msgs.msg import PoseStamped
 from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
 from rcl_interfaces.srv import SetParameters
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
 try:
@@ -59,7 +62,9 @@ except ImportError:
 
 class State(Enum):
     IDLE = auto()
+    OPEN_GRIPPER_INIT = auto()
     MOVE_HOME_INIT = auto()
+    CAPTURE_REF = auto()
     MOVE_TO_GRASP = auto()
     CLOSE_GRIPPER = auto()
     MOVE_HOME_FINAL = auto()
@@ -116,6 +121,14 @@ class CableGraspOrchestrator(Node):
         self.declare_parameter("moveit.max_velocity", 0.2)
         self.declare_parameter("moveit.max_acceleration", 0.2)
 
+        # GelSight contact monitoring (cable_pose_estimator namespaces)
+        self.declare_parameter("contact_check.enabled", True)
+        self.declare_parameter("contact_check.require_both", True)
+        self.declare_parameter("contact_check.timeout_ms", 300)
+        self.declare_parameter(
+            "contact_check.cam_namespaces",
+            ["cable_pose_estimator_cam1", "cable_pose_estimator_cam2"])
+
         # ── ROS plumbing ─────────────────────────────────────────────────────
         self._cb = ReentrantCallbackGroup()
         self.status_pub = self.create_publisher(String, "/cable_grasp/status", 10)
@@ -127,6 +140,10 @@ class CableGraspOrchestrator(Node):
 
         self.gripper_client = ActionClient(
             self, GripperCommand, "/panda_gripper/gripper_action", callback_group=self._cb)
+        self.move_client = ActionClient(
+            self, Move, "/panda_gripper/move", callback_group=self._cb)
+        self.homing_client = ActionClient(
+            self, Homing, "/panda_gripper/homing", callback_group=self._cb)
 
         # MoveIt2 wrapper
         self.moveit2 = None
@@ -167,6 +184,19 @@ class CableGraspOrchestrator(Node):
             FrankaRobotState, "/franka_robot_state_broadcaster/robot_state",
             self._on_robot_state, qos_profile_sensor_data, callback_group=self._cb)
 
+        # GelSight contact monitoring — one subscriber + one capture_ref client per cam
+        self._cam_ns = list(self.get_parameter("contact_check.cam_namespaces").value)
+        self._contact_last_true_ns: dict = {ns: 0 for ns in self._cam_ns}
+        self._contact_latest: dict = {ns: False for ns in self._cam_ns}
+        self._capture_ref_clients: dict = {}
+        for ns in self._cam_ns:
+            self.create_subscription(
+                Bool, f"/{ns}/contact_detected",
+                lambda msg, n=ns: self._on_contact(n, msg),
+                10, callback_group=self._cb)
+            self._capture_ref_clients[ns] = self.create_client(
+                Trigger, f"/{ns}/capture_reference", callback_group=self._cb)
+
         # ── State ────────────────────────────────────────────────────────────
         self._state = State.IDLE
         self._state_start = self.get_clock().now()
@@ -175,6 +205,7 @@ class CableGraspOrchestrator(Node):
         self._derived_anchor: Optional[List[float]] = None
         self._home_T: Optional[np.ndarray] = None  # 4×4 EE pose at moment of MPC switch
         self._fail_reason = ""
+        self._contact_check_armed = False
 
         # Async helpers
         self._async_in_flight = False
@@ -196,6 +227,27 @@ class CableGraspOrchestrator(Node):
         self._latest_pose_T = np.array(msg.o_t_ee, dtype=float).reshape(4, 4, order="F")
         self._latest_robot_mode = int(msg.robot_mode)
 
+    def _on_contact(self, ns: str, msg: Bool):
+        self._contact_latest[ns] = bool(msg.data)
+        if msg.data:
+            self._contact_last_true_ns[ns] = self.get_clock().now().nanoseconds
+
+    def _contact_lost_cams(self) -> Optional[List[str]]:
+        """Return list of namespaces that have not seen contact within the timeout.
+        Returns None when contact is healthy. Honors require_both."""
+        timeout_ns = int(float(
+            self.get_parameter("contact_check.timeout_ms").value) * 1e6)
+        require_both = bool(self.get_parameter("contact_check.require_both").value)
+        now_ns = self.get_clock().now().nanoseconds
+        lost = [ns for ns in self._cam_ns
+                if (now_ns - self._contact_last_true_ns.get(ns, 0)) > timeout_ns]
+        if require_both:
+            return lost if lost else None
+        # require any cam to have contact
+        if len(lost) == len(self._cam_ns):
+            return lost
+        return None
+
     # ── Service callbacks ───────────────────────────────────────────────────
     def _on_start(self, request, response):
         if self._state not in (State.IDLE, State.DONE, State.FAILED):
@@ -206,8 +258,9 @@ class CableGraspOrchestrator(Node):
         self._fail_reason = ""
         self._derived_anchor = None
         self._home_T = None
+        self._contact_check_armed = False
         self._traj_stop.clear()
-        self._set_state(State.MOVE_HOME_INIT)
+        self._set_state(State.OPEN_GRIPPER_INIT)
         response.success = True
         response.message = "started"
         return response
@@ -224,7 +277,8 @@ class CableGraspOrchestrator(Node):
     # ── FSM driver ──────────────────────────────────────────────────────────
     def _set_state(self, new_state: State):
         if new_state != self._state:
-            self.get_logger().info(f"FSM: {self._state.name} → {new_state.name}")
+            suffix = f" reason={self._fail_reason}" if new_state == State.ABORT and self._fail_reason else ""
+            self.get_logger().info(f"FSM: {self._state.name} → {new_state.name}{suffix}")
         self._state = new_state
         self._state_start = self.get_clock().now()
         self._async_in_flight = False
@@ -259,6 +313,14 @@ class CableGraspOrchestrator(Node):
                 self._set_state(State.ABORT)
                 return
 
+        # GelSight contact monitor — armed after CLOSE_GRIPPER succeeds.
+        if self._contact_check_armed and s not in (State.ABORT, State.FAILED, State.DONE):
+            lost = self._contact_lost_cams()
+            if lost is not None:
+                self._fail_reason = f"lost contact ({','.join(lost)})"
+                self._set_state(State.ABORT)
+                return
+
         handler = getattr(self, f"_st_{s.name.lower()}", None)
         if handler is None:
             self._fail_reason = f"no handler for {s.name}"
@@ -267,11 +329,90 @@ class CableGraspOrchestrator(Node):
         handler()
 
     # ── State handlers ──────────────────────────────────────────────────────
+    def _st_open_gripper_init(self):
+        # Homing cycles the fingers to calibrate max_width (without it the
+        # GripperCommand max is 0 and any open command is rejected) and leaves
+        # the gripper fully open. Used at start instead of a plain open.
+        if not self._async_in_flight:
+            self._async_in_flight = True
+            threading.Thread(target=self._homing_worker, daemon=True).start()
+            return
+        if self._async_done:
+            if self._async_ok:
+                self._set_state(State.MOVE_HOME_INIT)
+            else:
+                self._fail_reason = "gripper homing failed"
+                self._set_state(State.ABORT)
+
+    def _homing_worker(self):
+        try:
+            if not self.homing_client.wait_for_server(timeout_sec=3.0):
+                raise RuntimeError("/panda_gripper/homing action server unavailable")
+            gh_fut = self.homing_client.send_goal_async(Homing.Goal())
+            t0 = self.get_clock().now()
+            while not gh_fut.done() and (self.get_clock().now() - t0).nanoseconds * 1e-9 < 5.0:
+                time.sleep(0.05)
+            if not gh_fut.done():
+                raise RuntimeError("homing goal accept timed out")
+            gh = gh_fut.result()
+            if gh is None or not gh.accepted:
+                raise RuntimeError("homing goal rejected")
+            res_fut = gh.get_result_async()
+            t0 = self.get_clock().now()
+            while not res_fut.done() and (self.get_clock().now() - t0).nanoseconds * 1e-9 < 20.0:
+                time.sleep(0.05)
+            if not res_fut.done():
+                raise RuntimeError("homing action timed out")
+            self._async_ok = True
+        except Exception as e:
+            self.get_logger().error(f"homing: {e}")
+            self._async_ok = False
+        finally:
+            self._async_done = True
+
     def _st_move_home_init(self):
         self._move_to_pose_async(
             list(self.get_parameter("home_pose").value),
             cartesian=False,
-            next_state=State.MOVE_TO_GRASP)
+            next_state=State.CAPTURE_REF)
+
+    def _st_capture_ref(self):
+        if not bool(self.get_parameter("contact_check.enabled").value):
+            self._set_state(State.MOVE_TO_GRASP)
+            return
+        if not self._async_in_flight:
+            self._async_in_flight = True
+            threading.Thread(target=self._capture_ref_worker, daemon=True).start()
+            return
+        if self._async_done:
+            if self._async_ok:
+                self._set_state(State.MOVE_TO_GRASP)
+            else:
+                self._fail_reason = "capture_reference failed"
+                self._set_state(State.ABORT)
+
+    def _capture_ref_worker(self):
+        try:
+            for ns, client in self._capture_ref_clients.items():
+                if not client.wait_for_service(timeout_sec=3.0):
+                    raise RuntimeError(f"/{ns}/capture_reference unavailable")
+                fut = client.call_async(Trigger.Request())
+                t0 = self.get_clock().now()
+                while not fut.done() and (self.get_clock().now() - t0).nanoseconds * 1e-9 < 5.0:
+                    time.sleep(0.05)
+                if not fut.done():
+                    raise RuntimeError(f"/{ns}/capture_reference timed out")
+                resp = fut.result()
+                if resp is None or not resp.success:
+                    msg = resp.message if resp is not None else "no response"
+                    raise RuntimeError(f"/{ns}/capture_reference failed: {msg}")
+                self.get_logger().info(f"captured ref for {ns}")
+            self._async_ok = True
+        except Exception as e:
+            self.get_logger().error(f"capture_ref: {e}")
+            self._async_ok = False
+        finally:
+            self._async_done = True
 
     def _st_move_to_grasp(self):
         self._move_to_pose_async(
@@ -280,13 +421,52 @@ class CableGraspOrchestrator(Node):
             next_state=State.CLOSE_GRIPPER)
 
     def _st_close_gripper(self):
-        diameter = float(self.get_parameter("cable_diameter").value)
-        self._gripper_command_async(
-            position=max(0.0, 0.7 * diameter),
-            effort=float(self.get_parameter("gripper_close_effort").value),
-            next_state=State.MOVE_HOME_FINAL)
+        # Use franka_gripper Move action — closes to target width without
+        # libfranka's "no object detected" failure handling (which auto-opens).
+        # Cable presence is validated by the GelSight contact monitor instead.
+        if not self._async_in_flight:
+            self._async_in_flight = True
+            threading.Thread(target=self._move_close_worker, daemon=True).start()
+            return
+        if self._async_done:
+            if self._async_ok:
+                self._set_state(State.MOVE_HOME_FINAL)
+            else:
+                self._fail_reason = "gripper close failed"
+                self._set_state(State.ABORT)
+
+    def _move_close_worker(self):
+        try:
+            if not self.move_client.wait_for_server(timeout_sec=2.0):
+                raise RuntimeError("/panda_gripper/move action server unavailable")
+            goal = Move.Goal()
+            goal.width = 0.0  # close fingers fully; cable stalls them where it is
+            goal.speed = 0.05
+            gh_fut = self.move_client.send_goal_async(goal)
+            t0 = self.get_clock().now()
+            while not gh_fut.done() and (self.get_clock().now() - t0).nanoseconds * 1e-9 < 5.0:
+                time.sleep(0.05)
+            if not gh_fut.done():
+                raise RuntimeError("move goal accept timed out")
+            gh = gh_fut.result()
+            if gh is None or not gh.accepted:
+                raise RuntimeError("move goal rejected")
+            res_fut = gh.get_result_async()
+            t0 = self.get_clock().now()
+            while not res_fut.done() and (self.get_clock().now() - t0).nanoseconds * 1e-9 < 10.0:
+                time.sleep(0.05)
+            if not res_fut.done():
+                raise RuntimeError("move action timed out")
+            self._async_ok = True
+        except Exception as e:
+            self.get_logger().error(f"move close: {e}")
+            self._async_ok = False
+        finally:
+            self._async_done = True
 
     def _st_move_home_final(self):
+        if bool(self.get_parameter("contact_check.enabled").value):
+            self._contact_check_armed = True
         self._move_to_pose_async(
             list(self.get_parameter("home_pose").value),
             cartesian=False,
@@ -523,6 +703,7 @@ class CableGraspOrchestrator(Node):
     def _st_abort(self):
         if not self._async_in_flight:
             self._async_in_flight = True
+            self._contact_check_armed = False
             self._traj_stop.set()
             threading.Thread(target=self._abort_worker, daemon=True).start()
             return
