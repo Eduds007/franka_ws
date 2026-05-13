@@ -8,13 +8,13 @@ Research workspace for cable manipulation with a **Franka Panda 7-DOF arm**. Com
 GelSight Cameras
       │
       ▼
-FEATS UNet (PyTorch)          ←── tactile_cameras / tension_estimator
-      │ force estimates
+cable_pose_estimator      ←── tactile_cameras
+      │ pose / contact
       ▼
-Multi-Priority Controller     ←── tension_control (C++ plugin, 1 kHz)
+Multi-Priority Controller ←── tension_control (C++ plugin, 1 kHz)
       │ joint torques
       ▼
-FrankaHardwareInterface       ←── franka_ros2 / libfranka
+FrankaHardwareInterface   ←── franka_ros2 / libfranka
       │
       ▼
 Franka Panda Robot
@@ -38,16 +38,10 @@ franka_ws/
 │   ├── franka_ros2/            # Official Franka ROS2 packages (submodule)
 │   ├── libfranka/              # Low-level Franka FCI C++ library (submodule)
 │   ├── tension_control/        # Custom admittance & multi-priority controllers
-│   ├── tension_estimator/      # GelSight → FEATS inference → force estimates
-│   ├── tactile_cameras/        # GelSight drivers, marker tracking, cable pose
-│   ├── feats/                  # FEATS UNet model weights and utilities
-│   └── franka_moveit_example/  # MoveIt2 Python scripting examples
+│   ├── tactile_cameras/        # GelSight drivers and cable pose estimation
+│   └── feats/                  # FEATS UNet model weights and utilities
 ├── Mujoco/                     # MuJoCo simulation assets
-├── scripts/                    # Motion primitive scripts (detect cable, circular motion)
-├── run_mujoco.py               # Standalone MuJoCo simulation entry point
-├── interactive_joint_commander.py  # Interactive CLI for manual joint control
-├── publish_trajectory.py       # Trajectory publisher utility
-├── publish_joint_command.py    # Joint command publisher utility
+├── scripts/                    # Utility and bringup helper scripts
 └── cable_pose_estimation_demo.ipynb  # Cable pose estimation demo notebook
 ```
 
@@ -57,13 +51,11 @@ franka_ws/
 - `admittance_controller.cpp` — Impedance/admittance control plugin (125 Hz)
 - `multi_priority_controller.cpp` — Multi-task priority framework (cable tension + EE pose)
 - `tactile_detection_service.py` — Cable detection state machine via GelSight
+- `cable_grasp_orchestrator.py` — FSM orchestrator for the full cable pickup pipeline
 
 **`tactile_cameras`** — GelSight camera integration and cable pose estimation.
+- `camera_publisher.py` — Publishes raw GelSight images to ROS2 topics
 - `cable_pose_estimator.py` — Cable pose from tactile contact geometry
-- `gelsight_object_detection.py` — Object detection on GelSight images
-- `gelsight_marker_detector.py` — Marker-based deformation tracking
-
-**`tension_estimator`** — ROS2 node that pipes GelSight images through the FEATS UNet to produce per-finger force estimates.
 
 ## Prerequisites
 
@@ -87,16 +79,59 @@ Build a single package:
 colcon build --packages-select tension_control
 ```
 
-## Running
+## Quick Start — Cable Pickup Pipeline
 
-### Real Robot Bringup
+### Terminal 1 — Launch
 
 ```bash
-# Full bringup with RViz
-ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3 use_rviz:=true
+source /opt/ros/humble/setup.bash
+source ~/franka_ws/install/setup.bash
+export LD_LIBRARY_PATH=/home/nuc_6g_life_3/franka_ws/src/install/libfranka/lib:$LD_LIBRARY_PATH
+ros2 launch tension_control cable_pickup_and_control.launch.py robot_ip:=172.16.0.3 use_rviz:=false
+```
 
-# With MoveIt2
-ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3
+Wait for the log line: `Cable grasp orchestrator ready`
+
+### Terminal 2 — Control
+
+```bash
+source /opt/ros/humble/setup.bash
+source ~/franka_ws/install/setup.bash
+
+# Start the grasp sequence
+ros2 service call /cable_grasp/start std_srvs/srv/Trigger
+
+# Stop
+ros2 service call /cable_grasp/stop std_srvs/srv/Trigger
+
+# Monitor FSM state
+ros2 topic echo /cable_grasp/status
+```
+
+### Manual Gripper Commands
+
+```bash
+# Open
+ros2 action send_goal /panda_gripper/gripper_action control_msgs/action/GripperCommand \
+  "{command: {position: 0.04, max_effort: 0.0}}"
+
+# Close (firm)
+ros2 action send_goal /panda_gripper/gripper_action control_msgs/action/GripperCommand \
+  "{command: {position: 0.001, max_effort: 30.0}}"
+```
+
+### Rebuild After Code Changes
+
+```bash
+cd ~/franka_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select tension_control
+```
+
+## Other Launch Options
+
+### Real Robot Bringup (franka_bringup only)
+
+```bash
+ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3 use_rviz:=true
 ```
 
 ### Fake Hardware (no robot required)
@@ -105,52 +140,10 @@ ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3
 ros2 launch franka_bringup franka.launch.py robot_ip:=dont-care use_fake_hardware:=true
 ```
 
-### Tension / Admittance Controller
-
-```bash
-ros2 launch tension_control admittance_controller.launch.py
-# or
-ros2 launch tension_control multi_priority_controller.launch.py
-```
-
-### Force Estimation
-
-```bash
-ros2 launch tension_estimator force_estimator.launch.py
-```
-
-### Cable Pose Estimation
-
-```bash
-ros2 launch tactile_cameras cable_pose_estimator_config.launch.py
-```
-
 ### MuJoCo Simulation
 
 ```bash
 python run_mujoco.py
-```
-
-### GelSight Cameras
-
-```bash
-bash scripts/demo_cameras.sh          # real USB cameras
-bash scripts/demo_cameras.sh --dummy  # dummy mode
-```
-
-### Interactive Joint Control
-
-```bash
-python interactive_joint_commander.py
-```
-
-Provides predefined positions (home, ready, up, down, left, right) and custom joint entry.
-
-### Motion Primitives
-
-```bash
-python scripts/primitive_1_detect_cable.py   # home → close gripper → detect cable
-python scripts/primitive_2_circular_motion.py # circular trajectory with cable monitoring
 ```
 
 ## Testing
