@@ -8,34 +8,26 @@
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
-  
-  <build_depend>rclcpp</build_depend>
-  <build_depend>rclcpp_action</build_depend>
-  <build_depend>sensor_msgs</build_depend>
-  <build_depend>geometry_msgs</build_depend>
-  <build_depend>std_msgs</build_depend>
-  <build_depend>std_srvs</build_depend>
-  <build_depend>eigen3-dev</build_depend>
-  <build_depend>rosidl_default_generators</build_depend>
-  <build_depend>action_msgs</build_depend>
-  <build_depend>control_msgs</build_depend>
-  <build_depend>trajectory_msgs</build_depend>
-  
-  <exec_depend>rclcpp</exec_depend>
-  <exec_depend>rclcpp_action</exec_depend>
-  <exec_depend>sensor_msgs</exec_depend>
-  <exec_depend>geometry_msgs</exec_depend>
-  <exec_depend>std_msgs</exec_depend>
-  <exec_depend>std_srvs</exec_depend>
-  <exec_depend>rosidl_default_runtime</exec_depend>
-  <exec_depend>action_msgs</exec_depend>
-  <exec_depend>control_msgs</exec_depend>
-  <exec_depend>trajectory_msgs</exec_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>control_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>eigen3-dev</depend>
+  <!-- ros2_control plugin dependencies -->
+  <depend>controller_interface</depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>franka_semantic_components</depend>
+  <depend>franka_hardware</depend>
+  <depend>franka_msgs</depend>
+
   <exec_depend>rclpy</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
-  <exec_depend>python3-scipy</exec_depend>
-  
-  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
