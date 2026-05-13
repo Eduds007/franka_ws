@@ -83,6 +83,8 @@ install(DIRECTORY include/
 
 install(PROGRAMS
   scripts/gripper_control.py
+  scripts/cable_grasp_orchestrator.py
+  scripts/circle_trajectory.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

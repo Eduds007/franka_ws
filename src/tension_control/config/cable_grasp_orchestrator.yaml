@@ -1,0 +1,45 @@
+cable_grasp_orchestrator:
+  ros__parameters:
+    # ── Poses (panda_link0 frame): [x, y, z, qw, qx, qy, qz] ───────────────────
+    # Sequence visits home → grasp → home (with cable). Both poses are required.
+    # TODO: calibrate physically.
+    home_pose:  [0.2478, -0.0129, 0.5537, 0.0197, -0.9990, 0.0066, -0.0384]
+    grasp_pose: [0.6567, 0.0040, 0.2137, -0.0030, 0.9996, 0.0287, -0.0066]
+
+    # Cable geometry — used to derive anchor_position from the home EE pose
+    cable_length: 0.7              # [m]
+    cable_dir_unit: [0.0, 0.0, -1.0]  # unit vector EE → anchor in base frame
+    cable_diameter: 0.005          # [m] — gripper closes to ~70% of this
+
+    # Gripper
+    gripper_open_pos: 0.04         # [m] — per-finger (driver doubles to total width 0.08)
+    gripper_close_effort: 40.0     # [N] — Panda sustained grasp force
+
+    # Controllers
+    controller_manager_name: controller_manager
+    approach_controller: joint_trajectory_controller
+    tension_controller: multi_priority_controller
+    desired_tension: 5.0           # [N] — pushed to multi_priority_controller via SetParameters
+
+    # Wait for the controller's gain & setpoint ramp before publishing trajectory.
+    # Must be >= multi_priority_controller's kSetpointRampDuration (5.0s).
+    ramp_wait_s: 5.5
+
+    # Trajectory in null-space of the cable tension task.
+    trajectory.enabled: true
+    trajectory.radius_m: 0.05
+    trajectory.period_s: 8.0
+    trajectory.rate_hz: 100.0
+    trajectory.plane: "xy"          # xy | xz | yz
+    trajectory.duration_s: 0.0      # 0 → run forever (until /cable_grasp/stop)
+
+    # MoveIt motion limits for approach moves (grasp + home transitions)
+    moveit.max_velocity: 0.2
+    moveit.max_acceleration: 0.2
+
+    # GelSight contact monitoring — armed after CLOSE_GRIPPER. If contact is
+    # lost (no True message within timeout_ms) the FSM aborts.
+    contact_check.enabled: true
+    contact_check.require_both: false
+    contact_check.timeout_ms: 300
+    contact_check.cam_namespaces: ["cable_pose_estimator_cam1"]

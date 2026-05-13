@@ -1,144 +1,30 @@
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
+ Terminal 1 — launch                     
+  source /opt/ros/humble/setup.bash                                                                                                                                  
+  source ~/franka_ws/install/setup.bash                                                                                                                              
+  export LD_LIBRARY_PATH=/home/nuc_6g_life_3/franka_ws/src/install/libfranka/lib:$LD_LIBRARY_PATH                                                                    
+  ros2 launch tension_control cable_pickup_and_control.launch.py robot_ip:=172.16.0.3 use_rviz:=false                                                                
+                                                                                                                                                                     
+  # (espera "Cable grasp orchestrator ready")                                                                                                                        
+                                                                                                                                                                     
+  # Terminal 2 — start                                                                                                                                               
+  source /opt/ros/humble/setup.bash                  
 
-cd /home/nuc_6g_life_3/franka_ws && ls -la install/franka_position_reader_cpp/lib/franka_position_reader_cpp/
+  # (espera "Cable grasp orchestrator ready")
 
-gripping position
-name:
-- panda_joint1
-- panda_joint2
-- panda_joint3
-- panda_joint4
-- panda_joint6
-- panda_joint7
-- panda_joint5
-position:
-- 0.02542098999620014
-- 0.7414072381662683
-- 0.019936763503084078
-- -1.4321628188321502
-- 2.175834281696958
-- -0.7388884545018181
-- -0.05840168118070459
+  # Terminal 2 — start
+  source /opt/ros/humble/setup.bash
+  source ~/franka_ws/install/setup.bash
+  ros2 service call /cable_grasp/start std_srvs/srv/Trigger
 
-homing position
-std::array<double, 7> q_goal = {{0, -M_PI_4, 0, -3 * M_PI_4, 0, M_PI_2, M_PI_4}};
+  # Stop
+  ros2 service call /cable_grasp/stop std_srvs/srv/Trigger
 
+  # Status FSM
+  ros2 topic echo /cable_grasp/status
 
-Se controlador näo iniciar     
+  # Manual gripper
+  ros2 action send_goal /panda_gripper/gripper_action control_msgs/action/GripperCommand "{command: {position: 0.04, max_effort: 0.0}}"   # abrir
+  ros2 action send_goal /panda_gripper/gripper_action control_msgs/action/GripperCommand "{command: {position: 0.001, max_effort: 30.0}}" # fechar firme
 
-# 0. ATIVAR FCI
-
-# 1. Reiniciar o Franka controller
-ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
-
-# 2. Carregar o joint trajectory controller
-ros2 control load_controller joint_trajectory_controller
-ros2 control load_controller admittance_example_controller
-
-# 3. Configurar e ativar o controller
-ros2 run controller_manager spawner joint_trajectory_controller
-
-Evitar problemas no futuro
-
-# Terminal 1: Iniciar o Franka controller
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_bringup franka.launch.py robot_ip:=172.16.0.3
-
-# Terminal 2: Aguardar e ativar o joint trajectory controller
-sleep 10 && ros2 run controller_manager spawner joint_trajectory_controller
-
-# Terminal 3: Executar move_homing
-ros2 run tension_control move_homing
-
-./src/tension_control/scripts/homing_routine_auto.sh
-
-ABRIR CAMERA
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras camera_demo.launch.xml
-
-LER FORCA DUAS CAMERA
-cd /home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && python3 force_estimator_node.py
-
-
-cd /home/nuc_6g_life_3/franka_ws && colcon build --packages-select franka_moveit_example
-
-# SIMULADO (RViz com hardware fake)
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=dont-care use_fake_hardware:=true
-
-# ROBÔ REAL (RViz com robô físico)
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
-
-# Executar exemplo com círculo (robô real)
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_real_robot
-
-# Executar exemplo simples (simulado)
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_example
-
-
-#controlador basico funcionando - 14/01/2026 - 4 terminais diferentes
-
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras camera_demo.launch.xml
-ros2 topic echo feats/cam1/total_force 
-
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch franka_moveit_config moveit.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
-
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 run franka_moveit_example moveit_real_robot
-
-#executar controlador de velocidade
-
-cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch franka_bringup cartesian_velocity_example_controller.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false
-
-#Admitance control com trajetoria circular cd /home/nuc_6g_life_3/franka_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch franka_bringup admittance_example_controller.launch.py robot_ip:=172.16.0.3 use_fake_hardware:=false\
-
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
-
-# SEQUÊNCIA COMPLETA PARA HYBRID POSITION FORCE CONTROLLER - ATUALIZADO 12/03/2026
-
-# Terminal 1: Controlador Híbrido (os broadcasters são carregados automaticamente)
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
-
-# Terminal 2: Câmeras Táteis
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras camera_demo.launch.xml
-
-# Terminal 3: Estimador de Força FEATS
-cd /home/nuc_6g_life_3/franka_ws/src/feats/src/feats/src/predict && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && python3 force_estimator_node.py
-
-# Terminal 4: Estimador de Pose do Cabo
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras cable_pose_estimator.launch.py debug_visualization:=true
-
-# Terminal 5: Capturar Referência do Cabo (após todos iniciarem)
-source /opt/ros/humble/setup.bash && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && ros2 service call /cable_pose_estimator/capture_reference std_srvs/srv/Trigger "{}"
-
-# MONITORAMENTO (opcional)
-ros2 topic echo /cable_pose_estimator/cable_pose
-ros2 topic echo /feats/cam1/total_force
-ros2 topic echo /feats/cam2/total_force
-ros2 run rqt_image_view rqt_image_view /cable_pose_estimator/debug_image
-ros2 control list_controllers  # Ver status dos controladores e broadcasters
-
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && RCUTILS_CONSOLE_OUTPUT_FORMAT="[{severity}] [{name}]: {message}" RCUTILS_COLORIZED_OUTPUT=1 ros2 launch franka_bringup hybrid_position_force_controller.launch.py robot_ip:=172.16.0.4 use_rviz:=false
-source /opt/ros/humble/setup.bash && source /home/nuc_6g_life_3/franka_ws/install/setup.bash && ros2 service call /cable_pose_estimator/capture_reference std_srvs/srv/Trigger "{}"
-cd /home/nuc_6g_life_3/franka_ws && source install/setup.bash && ros2 launch tactile_cameras cable_pose_estimator.launch.py debug_visualization:=true
-ros2 run rqt_image_view rqt_image_view /cable_pose_estimator/debug_image
-ros2 topic echo /cable_pose_estimator/cable_pose
-
-Terminal 1 — launch                                                                                                                                                                                  
-  cd /home/nuc_6g_life_3/franka_ws                                                                                                                                                                     
-  source /opt/ros/humble/setup.bash                                                                                                                                                                    
-  source install/setup.bash        
-  export LD_LIBRARY_PATH="/home/nuc_6g_life_3/franka_ws/src/install/libfranka/lib:$LD_LIBRARY_PATH"
-  ros2 launch franka_bringup multi_priority_controller.launch.py robot_ip:=172.16.0.3 load_gripper:=false
-                                                                                                                                                                                                       
-  Terminal 2 — só se os spawners do launch falharem (bug "already loaded")                                                                                                                             
-  cd /home/nuc_6g_life_3/franka_ws                                                                                                                                                                     
-  source /opt/ros/humble/setup.bash                                                                                                                                                                    
-  source install/setup.bash                                                                                                                                                                            
-  ros2 control load_controller joint_state_broadcaster        --set-state active
-  ros2 control load_controller franka_robot_state_broadcaster --set-state active                                                                                                                       
-  ros2 control load_controller multi_priority_controller       --set-state active                                                                                                                      
-  ros2 control list_controllers   # verificar                                                                                                                                                          
-                                                                                                                                                                                                       
-  Terminal 3 — trajetória circular                                                                                                                                                                     
-  cd /home/nuc_6g_life_3/franka_ws
-  source /opt/ros/humble/setup.bash                                                                                                                                                                    
-  source install/setup.bash                                                                                                                                                                            
-  python3 src/tension_control/scripts/circle_trajectory.py
-  # opcional: --radius 0.1 --period 12.0 --plane xy --frame panda_link0  
+  Build após mudar código:
+  cd ~/franka_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select tension_control

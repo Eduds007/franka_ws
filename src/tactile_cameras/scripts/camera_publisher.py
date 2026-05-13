@@ -109,6 +109,9 @@ class CameraPublisherNode(Node):
         if self.cap1 is not None and self.cap1.isOpened():
             ret1, frame1 = self.cap1.read()
             if ret1:
+                # GelSight Mini ignores CAP_PROP_FRAME_HEIGHT — force resize.
+                if frame1.shape[0] != self.height or frame1.shape[1] != self.width:
+                    frame1 = cv2.resize(frame1, (self.width, self.height))
                 # Add timestamp
                 timestamp_str = f"Cam1: {current_time.nanoseconds // 1000000}"
                 cv2.putText(frame1, timestamp_str, (10, self.height - 20), 
