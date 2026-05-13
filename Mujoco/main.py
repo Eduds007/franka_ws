@@ -1,0 +1,653 @@
+"""
+main.py
+=======
+Simulação principal: Franka Panda + Franka Hand + cabo + Controlador MultiPrioridade.
+
+Sequência de operação:
+  1. GRASP: Robô move a garra até o conector do cabo no chão e o pega.
+  2. TASK:  Robô executa trajetória em arco no plano XY mantendo tensão no cabo.
+
+Uso:
+    python main.py                      # modo interativo (viewer)
+    python main.py --headless 40.0      # headless + plots + CSV
+
+Teclas no viewer:
+    ESPAÇO  — pausar / continuar
+    R       — reiniciar trajetória
+    Q       — sair
+"""
+
+import os
+import sys
+import csv
+import time
+import datetime
+from enum import Enum, auto
+
+import numpy as np
+import mujoco
+import mujoco.viewer
+
+from multi_priority_controller import MultiPriorityController, get_ee_jacobian, pseudo_inverse
+
+# ---------------------------------------------------------------------------
+# Configurações globais
+# ---------------------------------------------------------------------------
+
+XML_PATH = "franka_cable.xml"
+
+# Posição inicial do robô: "home" do Panda
+QPOS_INIT_ROBOT = np.array([0.0, 0.0, 0.0, -1.5708, 0.0, 1.5708, -0.7853])
+
+# Âncora
+ANCHOR_POS = np.array([0.8, 0.0, 0.4])
+
+# Parâmetros do cabo
+CABLE_LENGTH = 0.50
+
+# Parâmetros da trajetória em arco (plano XY, Z fixo)
+ARC_CENTER_X    = 0.80
+ARC_CENTER_Y    = 0.00
+ARC_RADIUS      = 0.50
+ARC_Z_FIXED     = 0.40
+ARC_ANGLE_START = np.deg2rad(120.0)
+ARC_ANGLE_END   = np.deg2rad(240.0)
+ARC_PERIOD      = 20.0
+
+# Parâmetros do controlador
+TENSION_DESIRED = 10.0
+POS_KP          = 150.0
+POS_KD          = 15.0
+NULL_DAMPING    = 5.0
+
+# ---------------------------------------------------------------------------
+# Configurações da fase de grasp
+# ---------------------------------------------------------------------------
+
+CONNECTOR_POS_INIT           = np.array([0.5, 0.0, 0.025])
+GRASP_APPROACH_HEIGHT_OFFSET = 0.18    # m acima do conector
+GRASP_HEIGHT_OFFSET          = 0.005   # m — altura de contato
+REACH_POS_TOL                = 0.015   # m
+LOWER_POS_TOL                = 0.012   # m
+LIFT_HEIGHT                  = 0.40    # m (= ARC_Z_FIXED)
+LIFT_POS_TOL                 = 0.020   # m
+CLOSE_GRIPPER_DURATION       = 1.0     # s — tempo para fechar dedos
+WELD_ACTIVATE_DELAY          = 0.3     # s — tempo para weld estabilizar
+GRIPPER_OPEN_CTRL            = 255.0   # ctrl → dedos abertos
+GRIPPER_CLOSE_CTRL           = 0.0     # ctrl → dedos fechados
+GRASP_KP                     = 200.0
+GRASP_KD                     = 20.0
+GRASP_NULL_DAMP              = 3.0
+
+# Logging
+LOG_EVERY_N_STEPS   = 10
+PRINT_EVERY_N_STEPS = 200
+
+
+# ---------------------------------------------------------------------------
+# Fase de grasp
+# ---------------------------------------------------------------------------
+
+class GraspPhase(Enum):
+    REACH_ABOVE    = auto()
+    LOWER_TO_GRASP = auto()
+    CLOSE_GRIPPER  = auto()
+    ACTIVATE_WELD  = auto()
+    LIFT           = auto()
+    TASK           = auto()
+
+
+def cartesian_pd_torque(
+    model: mujoco.MjModel,
+    data:  mujoco.MjData,
+    target_pos: np.ndarray,
+    prev_ee: "np.ndarray | None" = None,
+    prev_t:  "float | None"      = None,
+    kp: float = GRASP_KP,
+    kd: float = GRASP_KD,
+    null_damp: float = GRASP_NULL_DAMP,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Controlador Cartesiano PD simples para as 7 juntas do braço.
+
+    Retorna (tau[7], ee_pos[3], pos_error_scalar).
+    """
+    n = 7
+    ee_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+    ee_pos = data.site_xpos[ee_id].copy()
+
+    t = float(data.time)
+    if prev_ee is not None and prev_t is not None and (t - prev_t) > 1e-9:
+        ee_vel = (ee_pos - prev_ee) / (t - prev_t)
+    else:
+        ee_vel = np.zeros(3)
+
+    pos_error_vec = target_pos - ee_pos
+    pos_error     = float(np.linalg.norm(pos_error_vec))
+
+    J_full = get_ee_jacobian(model, data)   # (6, 7)
+    J3     = J_full[:3, :]                  # (3, 7) translacional
+    J_pinv = pseudo_inverse(J3, 5e-3)
+
+    F_pos = kp * pos_error_vec - kd * ee_vel
+    tau   = J3.T @ F_pos
+
+    tau += data.qfrc_bias[:n]
+
+    N = np.eye(n) - J_pinv @ J3
+    tau += N @ (-null_damp * data.qvel[:n])
+
+    max_tau = np.array([87, 87, 87, 87, 12, 12, 12], dtype=float)
+    tau = np.clip(tau, -max_tau, max_tau)
+
+    return tau, ee_pos, pos_error
+
+
+class GraspStateMachine:
+    """Máquina de estados para a sequência de pickup do cabo."""
+
+    def __init__(self, model: mujoco.MjModel, data: mujoco.MjData):
+        self.phase: GraspPhase = GraspPhase.REACH_ABOVE
+        self._phase_start_time: float = 0.0
+
+        self.weld_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_EQUALITY, "grasp_weld")
+        self.connector_body_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "cable_connector")
+        self.gripper_act_idx = 7
+
+        self._prev_ee_pos: "np.ndarray | None" = None
+        self._prev_time:   "float | None"       = None
+
+    def reset(self, data: mujoco.MjData) -> None:
+        self.phase = GraspPhase.REACH_ABOVE
+        self._phase_start_time = float(data.time)
+        self._prev_ee_pos = None
+        self._prev_time   = None
+        if self.weld_id >= 0:
+            data.eq_active[self.weld_id] = False
+
+    def _connector_pos(self, data: mujoco.MjData) -> np.ndarray:
+        return data.xpos[self.connector_body_id].copy()
+
+    def step(self, model: mujoco.MjModel,
+             data: mujoco.MjData) -> tuple[np.ndarray, bool]:
+        """Executa um passo de controle. Retorna (tau[7], is_done)."""
+        t             = float(data.time)
+        connector_pos = self._connector_pos(data)
+
+        if self.phase == GraspPhase.REACH_ABOVE:
+            target = connector_pos + np.array([0, 0, GRASP_APPROACH_HEIGHT_OFFSET])
+            tau, ee_pos, err = cartesian_pd_torque(
+                model, data, target,
+                prev_ee=self._prev_ee_pos, prev_t=self._prev_time)
+            data.ctrl[self.gripper_act_idx] = GRIPPER_OPEN_CTRL
+            if err < REACH_POS_TOL:
+                print(f"[GRASP] REACH_ABOVE → LOWER_TO_GRASP  (err={err:.4f}m, t={t:.1f}s)")
+                self.phase = GraspPhase.LOWER_TO_GRASP
+                self._phase_start_time = t
+
+        elif self.phase == GraspPhase.LOWER_TO_GRASP:
+            target = connector_pos + np.array([0, 0, GRASP_HEIGHT_OFFSET])
+            tau, ee_pos, err = cartesian_pd_torque(
+                model, data, target,
+                prev_ee=self._prev_ee_pos, prev_t=self._prev_time)
+            data.ctrl[self.gripper_act_idx] = GRIPPER_OPEN_CTRL
+            if err < LOWER_POS_TOL:
+                print(f"[GRASP] LOWER_TO_GRASP → CLOSE_GRIPPER  (err={err:.4f}m, t={t:.1f}s)")
+                self.phase = GraspPhase.CLOSE_GRIPPER
+                self._phase_start_time = t
+
+        elif self.phase == GraspPhase.CLOSE_GRIPPER:
+            target = connector_pos + np.array([0, 0, GRASP_HEIGHT_OFFSET])
+            tau, ee_pos, err = cartesian_pd_torque(
+                model, data, target,
+                prev_ee=self._prev_ee_pos, prev_t=self._prev_time)
+            data.ctrl[self.gripper_act_idx] = GRIPPER_CLOSE_CTRL
+            if t - self._phase_start_time >= CLOSE_GRIPPER_DURATION:
+                print(f"[GRASP] CLOSE_GRIPPER → ACTIVATE_WELD  (t={t:.1f}s)")
+                self.phase = GraspPhase.ACTIVATE_WELD
+                self._phase_start_time = t
+
+        elif self.phase == GraspPhase.ACTIVATE_WELD:
+            target = connector_pos + np.array([0, 0, GRASP_HEIGHT_OFFSET])
+            tau, ee_pos, err = cartesian_pd_torque(
+                model, data, target,
+                prev_ee=self._prev_ee_pos, prev_t=self._prev_time)
+            data.ctrl[self.gripper_act_idx] = GRIPPER_CLOSE_CTRL
+            if self.weld_id >= 0 and not bool(data.eq_active[self.weld_id]):
+                data.eq_active[self.weld_id] = True
+                print(f"[GRASP] Weld ATIVADO  (t={t:.1f}s)")
+            if t - self._phase_start_time >= WELD_ACTIVATE_DELAY:
+                print(f"[GRASP] ACTIVATE_WELD → LIFT  (t={t:.1f}s)")
+                self.phase = GraspPhase.LIFT
+                self._phase_start_time = t
+
+        elif self.phase == GraspPhase.LIFT:
+            target = np.array([connector_pos[0], connector_pos[1], LIFT_HEIGHT])
+            tau, ee_pos, err = cartesian_pd_torque(
+                model, data, target,
+                prev_ee=self._prev_ee_pos, prev_t=self._prev_time)
+            data.ctrl[self.gripper_act_idx] = GRIPPER_CLOSE_CTRL
+            if err < LIFT_POS_TOL:
+                print(f"[GRASP] LIFT → TASK  (err={err:.4f}m, t={t:.1f}s)")
+                self.phase = GraspPhase.TASK
+                self._phase_start_time = t
+
+        else:  # TASK
+            ee_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+            ee_pos = data.site_xpos[ee_id].copy()
+            self._prev_ee_pos = ee_pos
+            self._prev_time   = t
+            return np.zeros(7), True
+
+        ee_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+        self._prev_ee_pos = data.site_xpos[ee_id].copy()
+        self._prev_time   = t
+        return tau, False
+
+
+# ---------------------------------------------------------------------------
+# Trajetória em arco — plano XY
+# ---------------------------------------------------------------------------
+
+def arc_trajectory(t: float) -> np.ndarray:
+    """Retorna [x, y] do alvo no plano XY para o instante t."""
+    frac  = (np.sin(2.0 * np.pi * t / ARC_PERIOD - np.pi / 2.0) + 1.0) / 2.0
+    angle = ARC_ANGLE_START + frac * (ARC_ANGLE_END - ARC_ANGLE_START)
+    x = ARC_CENTER_X + ARC_RADIUS * np.cos(angle)
+    y = ARC_CENTER_Y + ARC_RADIUS * np.sin(angle)
+    return np.array([x, y])
+
+
+# ---------------------------------------------------------------------------
+# Reset da simulação
+# ---------------------------------------------------------------------------
+
+def reset_simulation(model: mujoco.MjModel, data: mujoco.MjData,
+                     grasp_sm: "GraspStateMachine | None" = None) -> None:
+    """Reseta a simulação: braço em home, dedos abertos, conector no chão."""
+    mujoco.mj_resetData(model, data)
+
+    # Braço em home
+    data.qpos[:7] = QPOS_INIT_ROBOT.copy()
+
+    # Dedos abertos (0.04m cada)
+    fj1_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "finger_joint1")
+    fj2_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "finger_joint2")
+    if fj1_id >= 0:
+        data.qpos[model.jnt_qposadr[fj1_id]] = 0.04
+    if fj2_id >= 0:
+        data.qpos[model.jnt_qposadr[fj2_id]] = 0.04
+
+    # Conector na posição inicial
+    cc_jnt_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "cable_connector_joint")
+    if cc_jnt_id >= 0:
+        adr = model.jnt_qposadr[cc_jnt_id]
+        data.qpos[adr:adr+3] = CONNECTOR_POS_INIT.copy()
+        data.qpos[adr+3]     = 1.0   # quat w
+        data.qpos[adr+4:adr+7] = 0.0
+
+    # Garra aberta, braço sem torque
+    data.ctrl[:7] = 0.0
+    data.ctrl[7]  = GRIPPER_OPEN_CTRL
+
+    # Weld inativo
+    if grasp_sm is not None:
+        weld_id = grasp_sm.weld_id
+    else:
+        weld_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_EQUALITY, "grasp_weld")
+    if weld_id >= 0:
+        data.eq_active[weld_id] = False
+
+    mujoco.mj_forward(model, data)
+
+    if grasp_sm is not None:
+        grasp_sm.reset(data)
+
+
+# ---------------------------------------------------------------------------
+# Marcador visual do alvo
+# ---------------------------------------------------------------------------
+
+def update_target_marker(model: mujoco.MjModel, data: mujoco.MjData,
+                         xy: np.ndarray) -> None:
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_marker")
+    if body_id < 0:
+        return
+    mocap_id = model.body_mocapid[body_id]
+    if mocap_id >= 0:
+        data.mocap_pos[mocap_id] = [xy[0], xy[1], ARC_Z_FIXED]
+
+
+# ---------------------------------------------------------------------------
+# Logger CSV
+# ---------------------------------------------------------------------------
+
+class SimLogger:
+    HEADER = [
+        "time", "ee_x", "ee_y", "ee_z",
+        "tgt_x", "tgt_y",
+        "tension_N", "pos_error_m", "cable_taut",
+        "cable_dist_m",
+    ]
+
+    def __init__(self, log_dir: str = "logs"):
+        os.makedirs(log_dir, exist_ok=True)
+        ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(log_dir, f"sim_{ts}.csv")
+        self._file   = open(filepath, "w", newline="")
+        self._writer = csv.DictWriter(self._file, fieldnames=self.HEADER)
+        self._writer.writeheader()
+        self.filepath = filepath
+        print(f"[LOG] Salvando dados em: {filepath}")
+
+    def write(self, t: float, info: dict, target_xy: np.ndarray) -> None:
+        ee = info["ee_pos"]
+        self._writer.writerow({
+            "time":         f"{t:.4f}",
+            "ee_x":         f"{ee[0]:.5f}",
+            "ee_y":         f"{ee[1]:.5f}",
+            "ee_z":         f"{ee[2]:.5f}",
+            "tgt_x":        f"{target_xy[0]:.5f}",
+            "tgt_y":        f"{target_xy[1]:.5f}",
+            "tension_N":    f"{info['tension_estimated']:.4f}",
+            "pos_error_m":  f"{info['pos_error']:.5f}",
+            "cable_taut":   int(info["cable_taut"]),
+            "cable_dist_m": f"{info['cable_dist']:.5f}",
+        })
+
+    def close(self) -> None:
+        self._file.close()
+        print(f"[LOG] Arquivo fechado: {self.filepath}")
+
+
+# ---------------------------------------------------------------------------
+# Loop principal — modo interativo
+# ---------------------------------------------------------------------------
+
+def run_simulation() -> None:
+    try:
+        model = mujoco.MjModel.from_xml_path(XML_PATH)
+    except Exception as e:
+        print(f"[ERRO] Não foi possível carregar '{XML_PATH}': {e}")
+        return
+
+    data = mujoco.MjData(model)
+
+    grasp_sm = GraspStateMachine(model, data)
+    ctrl = MultiPriorityController(
+        cable_length    = CABLE_LENGTH,
+        tension_desired = TENSION_DESIRED,
+        pos_kp          = POS_KP,
+        pos_kd          = POS_KD,
+        fixed_z         = ARC_Z_FIXED,
+        null_damping    = NULL_DAMPING,
+        gravity_comp    = True,
+    )
+
+    reset_simulation(model, data, grasp_sm)
+    logger = SimLogger()
+
+    state = {
+        "paused":     False,
+        "reset":      False,
+        "quit":       False,
+        "step_count": 0,
+    }
+
+    def key_callback(keycode: int) -> None:
+        if keycode == ord(' '):
+            state["paused"] = not state["paused"]
+            status = "PAUSADA" if state["paused"] else "RODANDO"
+            print(f"[INFO] Simulação {status}")
+        elif keycode in (ord('R'), ord('r')):
+            state["reset"] = True
+        elif keycode in (ord('Q'), ord('q')):
+            state["quit"] = True
+
+    _print_header()
+
+    with mujoco.viewer.launch_passive(model, data,
+                                      key_callback=key_callback) as viewer:
+        viewer.cam.distance  = 2.0
+        viewer.cam.elevation = -30
+        viewer.cam.azimuth   = 150
+
+        arc_start_time: "float | None" = None
+
+        while viewer.is_running() and not state["quit"]:
+
+            if state["reset"]:
+                reset_simulation(model, data, grasp_sm)
+                ctrl.reset()
+                state["step_count"] = 0
+                state["reset"]      = False
+                arc_start_time      = None
+                print("[INFO] Simulação reiniciada.")
+
+            if not state["paused"]:
+                t          = float(data.time)
+                step_count = state["step_count"]
+                verbose    = (step_count % PRINT_EVERY_N_STEPS == 0)
+
+                if grasp_sm.phase != GraspPhase.TASK:
+                    tau, done = grasp_sm.step(model, data)
+                    data.ctrl[:7] = tau
+                    if done and arc_start_time is None:
+                        arc_start_time = t
+                    if verbose:
+                        ee_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+                        ee_pos = data.site_xpos[ee_id]
+                        print(f"  [t={t:.1f}s] GRASP: {grasp_sm.phase.name} | "
+                              f"EE: ({ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f})")
+                else:
+                    arc_t     = t - (arc_start_time if arc_start_time is not None else t)
+                    target_xy = arc_trajectory(arc_t)
+
+                    tau, info = ctrl.compute(model, data, target_xy, verbose=verbose)
+                    data.ctrl[:7] = tau
+                    data.ctrl[7]  = GRIPPER_CLOSE_CTRL
+
+                    if verbose:
+                        ee = info["ee_pos"]
+                        print(f"  [t={t:.1f}s] TASK | Alvo: ({target_xy[0]:.3f}, {target_xy[1]:.3f}) | "
+                              f"Erro: {info['pos_error']:.4f}m | "
+                              f"Tensão: {info['tension_estimated']:.1f}N | "
+                              f"Tenso: {info['cable_taut']}")
+
+                    update_target_marker(model, data, target_xy)
+
+                    if step_count % LOG_EVERY_N_STEPS == 0:
+                        logger.write(t, info, target_xy)
+
+                mujoco.mj_step(model, data)
+                state["step_count"] += 1
+
+            viewer.sync()
+            time.sleep(max(0.0, model.opt.timestep - 0.001))
+
+    logger.close()
+    print("[INFO] Simulação encerrada.")
+
+
+# ---------------------------------------------------------------------------
+# Modo headless — simulação + plots
+# ---------------------------------------------------------------------------
+
+def run_headless_and_plot(duration: float = 40.0) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        print("[AVISO] matplotlib não instalado. Instale com: pip install matplotlib")
+        return
+
+    try:
+        model = mujoco.MjModel.from_xml_path(XML_PATH)
+    except Exception as e:
+        print(f"[ERRO] Não foi possível carregar '{XML_PATH}': {e}")
+        return
+
+    data = mujoco.MjData(model)
+
+    grasp_sm = GraspStateMachine(model, data)
+    ctrl = MultiPriorityController(
+        cable_length    = CABLE_LENGTH,
+        tension_desired = TENSION_DESIRED,
+        pos_kp          = POS_KP,
+        pos_kd          = POS_KD,
+        fixed_z         = ARC_Z_FIXED,
+        null_damping    = NULL_DAMPING,
+        gravity_comp    = True,
+    )
+
+    reset_simulation(model, data, grasp_sm)
+    logger = SimLogger()
+
+    log_t:       list[float] = []
+    log_ee_x:    list[float] = []
+    log_ee_y:    list[float] = []
+    log_ee_z:    list[float] = []
+    log_tgt_x:   list[float] = []
+    log_tgt_y:   list[float] = []
+    log_tension: list[float] = []
+    log_error:   list[float] = []
+
+    dt    = model.opt.timestep
+    steps = int(duration / dt)
+    print_interval = max(1, steps // 20)
+
+    print(f"[INFO] Rodando {duration}s ({steps} steps @ {1/dt:.0f}Hz) ...")
+    _print_header()
+
+    arc_start_time: "float | None" = None
+
+    for i in range(steps):
+        t = float(data.time)
+
+        if grasp_sm.phase != GraspPhase.TASK:
+            tau, done = grasp_sm.step(model, data)
+            data.ctrl[:7] = tau
+            if done and arc_start_time is None:
+                arc_start_time = t
+        else:
+            arc_t     = t - (arc_start_time if arc_start_time is not None else t)
+            target_xy = arc_trajectory(arc_t)
+
+            tau, info = ctrl.compute(model, data, target_xy)
+            data.ctrl[:7] = tau
+            data.ctrl[7]  = GRIPPER_CLOSE_CTRL
+
+            if i % LOG_EVERY_N_STEPS == 0:
+                logger.write(t, info, target_xy)
+
+            if i % 50 == 0:
+                ee = info["ee_pos"]
+                log_t.append(t)
+                log_ee_x.append(ee[0])
+                log_ee_y.append(ee[1])
+                log_ee_z.append(ee[2])
+                log_tgt_x.append(target_xy[0])
+                log_tgt_y.append(target_xy[1])
+                log_tension.append(info["tension_estimated"])
+                log_error.append(info["pos_error"])
+
+            if i % print_interval == 0:
+                ee = info["ee_pos"]
+                print(f"  [t={t:.1f}s]  EE: ({ee[0]:.3f}, {ee[1]:.3f}, {ee[2]:.3f}) | "
+                      f"Alvo: ({target_xy[0]:.3f}, {target_xy[1]:.3f}) | "
+                      f"Tensão: {info['tension_estimated']:.1f}N | "
+                      f"Err: {info['pos_error']:.4f}m")
+
+        mujoco.mj_step(model, data)
+
+    logger.close()
+
+    if not log_t:
+        print("[AVISO] Nenhum dado de TASK coletado (simulação muito curta para completar grasp?).")
+        return
+
+    print("[INFO] Gerando plots ...")
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+    fig.suptitle("Franka Panda + Cabo — Controlador MultiPrioridade\n"
+                 f"P1: Tensão ≈ {TENSION_DESIRED}N  |  P2: Arco 120° no plano XY",
+                 fontsize=12, fontweight="bold")
+
+    ax = axes[0, 0]
+    ax.plot(log_tgt_x, log_tgt_y, "g--", linewidth=2.0, label="Alvo (arco)")
+    ax.plot(log_ee_x,  log_ee_y,  "b-",  linewidth=1.5, label="EE real",  alpha=0.8)
+    ax.scatter([ANCHOR_POS[0]], [ANCHOR_POS[1]], c="orange", s=120,
+               zorder=5, label=f"Âncora ({ANCHOR_POS[0]}, {ANCHOR_POS[1]})")
+    ax.scatter([0.0], [0.0], c="red", s=80, marker="^",
+               zorder=5, label="Base do robô")
+    theta_ref = np.linspace(ARC_ANGLE_START, ARC_ANGLE_END, 100)
+    ax.plot(ARC_CENTER_X + ARC_RADIUS * np.cos(theta_ref),
+            ARC_CENTER_Y + ARC_RADIUS * np.sin(theta_ref),
+            "g:", linewidth=1.0, alpha=0.5)
+    ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)")
+    ax.set_title("Trajetória EE — Plano XY")
+    ax.legend(fontsize=8); ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
+
+    ax = axes[0, 1]
+    ax.plot(log_t, log_error, "r-", linewidth=1.5)
+    ax.set_xlabel("Tempo (s)"); ax.set_ylabel("Erro (m)")
+    ax.set_title("Erro de Posição do End-Effector")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 0]
+    ax.plot(log_t, log_tension, color="darkorange", linewidth=1.5, label="Tensão estimada")
+    ax.axhline(TENSION_DESIRED, color="k", linestyle="--", linewidth=1.2,
+               label=f"Tensão desejada ({TENSION_DESIRED:.0f} N)")
+    ax.axhline(0.0, color="gray", linestyle=":", linewidth=0.8)
+    ax.set_xlabel("Tempo (s)"); ax.set_ylabel("Tensão (N)")
+    ax.set_title("Tensão no Cabo")
+    ax.legend(fontsize=8); ax.grid(True, alpha=0.3); ax.set_ylim(bottom=-1.0)
+
+    ax = axes[1, 1]
+    ax.plot(log_t, log_ee_x,  "b-",  linewidth=1.5, label="EE X real")
+    ax.plot(log_t, log_tgt_x, "b--", linewidth=1.0, label="EE X alvo", alpha=0.7)
+    ax.plot(log_t, log_ee_y,  "r-",  linewidth=1.5, label="EE Y real")
+    ax.plot(log_t, log_tgt_y, "r--", linewidth=1.0, label="EE Y alvo", alpha=0.7)
+    ax.plot(log_t, log_ee_z,  "g-",  linewidth=1.0, label="EE Z real", alpha=0.6)
+    ax.axhline(ARC_Z_FIXED, color="g", linestyle=":", linewidth=0.8,
+               label=f"Z alvo ({ARC_Z_FIXED}m)", alpha=0.6)
+    ax.set_xlabel("Tempo (s)"); ax.set_ylabel("Posição (m)")
+    ax.set_title("Coordenadas EE vs Tempo")
+    ax.legend(fontsize=7, ncol=2); ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plot_path = "resultados.png"
+    plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+    plt.show()
+    print(f"[INFO] Plot salvo em '{plot_path}'")
+
+
+# ---------------------------------------------------------------------------
+# Utilitário
+# ---------------------------------------------------------------------------
+
+def _print_header() -> None:
+    print("=" * 65)
+    print("  Franka Panda + Franka Hand + Cabo — MultiPrioridade")
+    print("=" * 65)
+    print(f"  Âncora:         {ANCHOR_POS}")
+    print(f"  Conector:       {CONNECTOR_POS_INIT}  (no chão)")
+    print(f"  Fases grasp:    REACH_ABOVE → LOWER → CLOSE → WELD → LIFT → TASK")
+    print(f"  Centro arco XY: ({ARC_CENTER_X:.2f}, {ARC_CENTER_Y:.2f})  Z fixo: {ARC_Z_FIXED}m")
+    print(f"  Raio arco:      {ARC_RADIUS} m  |  Período: {ARC_PERIOD} s")
+    print(f"  Tensão alvo:    {TENSION_DESIRED} N")
+    print("-" * 65)
+    print("  ESPAÇO → pausar/continuar  |  R → reiniciar  |  Q → sair")
+    print("=" * 65)
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--headless":
+        dur = float(sys.argv[2]) if len(sys.argv) > 2 else 40.0
+        run_headless_and_plot(dur)
+    else:
+        run_simulation()
