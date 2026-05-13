@@ -1,33 +1,33 @@
 """
 multi_priority_controller.py
 ============================
-Controlador MultiPrioridade para o Franka Panda com cabo.
+Multi-Priority Controller for Franka Panda with cable.
 
-Hierarquia de prioridades (da mais alta para mais baixa):
-  P1 — Manter tensão no cabo igual a tension_desired (N)
-  P2 — Rastrear posição alvo do end-effector no plano XY (Z fixo)
+Priority hierarchy (highest to lowest):
+  P1 — Maintain cable tension equal to tension_desired (N)
+  P2 — Track target end-effector position in XY plane (fixed Z)
 
-Método: Null-Space Projection (Siciliano & Slotine)
+Method: Null-Space Projection (Siciliano & Slotine)
   τ = J1ᵀ F1  +  (I − J1ᵀ J1#ᵀ) J2ᵀ F2  +  τ_grav  +  N1 N2 (−kd q̇)
 
-Formulação de P1 — tensão no cabo:
-  O cabo conecta o end-effector (EE) ao ponto âncora fixo.
-  A tensão é a força que o robô aplica para resistir ao cabo,
-  na direção que vai do EE EM DIREÇÃO ao âncora.
+P1 formulation — cable tension:
+  The cable connects the end-effector (EE) to the fixed anchor point.
+  Tension is the force the robot applies to resist the cable,
+  in the direction from EE TOWARD the anchor.
 
   F1 = tension_desired × ĉ
-  onde ĉ = (anchor − ee) / ‖anchor − ee‖  (direção EE→âncora)
+  where ĉ = (anchor − ee) / ‖anchor − ee‖  (EE→anchor direction)
 
   J1 = ĉᵀ J_ee[:3, :]   ∈ ℝ^(1×7)
-  N1 = I − J1† J1         (null-space da tarefa de tensão)
+  N1 = I − J1† J1         (null-space of the tension task)
 
-  O null-space de J1 corresponde a movimentos TANGENCIAIS ao cabo,
-  que são exatamente os movimentos do arco no plano XY — demonstrando
-  que P1 e P2 são matematicamente complementares para essa geometria.
+  The null-space of J1 corresponds to TANGENTIAL movements of the cable,
+  which are exactly the arc movements in the XY plane — showing
+  that P1 and P2 are mathematically complementary for this geometry.
 
-Estimativa de tensão real:
-  Lida de data.qfrc_constraint[:7] (forças de constraint em espaço de joint)
-  projetadas na direção do cabo:
+Actual tension estimate:
+  Read from data.qfrc_constraint[:7] (constraint forces in joint space)
+  projected onto the cable direction:
     T_est = (J1 · τ_constraint) / ‖J1‖²
 """
 
@@ -36,11 +36,11 @@ import mujoco
 
 
 # ---------------------------------------------------------------------------
-# Utilitários
+# Utilities
 # ---------------------------------------------------------------------------
 
 def pseudo_inverse(J: np.ndarray, damping: float = 1e-3) -> np.ndarray:
-    """Pseudo-inversa amortecida (Damped Least Squares — DLS).
+    """Damped pseudo-inverse (Damped Least Squares — DLS).
 
     J#  =  Jᵀ (J Jᵀ + λ² I)⁻¹
     """
@@ -50,16 +50,16 @@ def pseudo_inverse(J: np.ndarray, damping: float = 1e-3) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Jacobiano do end-effector via MuJoCo
+# End-effector Jacobian via MuJoCo
 # ---------------------------------------------------------------------------
 
 def get_ee_jacobian(model: mujoco.MjModel, data: mujoco.MjData,
                     ee_site_name: str = "end_effector",
                     n_arm_dof: int = 7) -> np.ndarray:
-    """Jacobiano geométrico (6 × n_arm_dof) do end-effector.
+    """Geometric Jacobian (6 × n_arm_dof) of the end-effector.
 
-    Linhas 0:3 = translacional, 3:6 = rotacional.
-    Retorna apenas as n_arm_dof colunas dos joints do braço (ignora dedos e free joints).
+    Rows 0:3 = translational, 3:6 = rotational.
+    Returns only the n_arm_dof columns for arm joints (ignores fingers and free joints).
     """
     nv   = model.nv
     Jt   = np.zeros((3, nv))
@@ -67,44 +67,44 @@ def get_ee_jacobian(model: mujoco.MjModel, data: mujoco.MjData,
     sid  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, ee_site_name)
     mujoco.mj_jacSite(model, data, Jt, Jr, sid)
     J_full = np.vstack([Jt, Jr])       # (6, nv)
-    return J_full[:, :n_arm_dof]        # (6, 7) — apenas joints do braço
+    return J_full[:, :n_arm_dof]        # (6, 7) — arm joints only
 
 
 # ---------------------------------------------------------------------------
-# Controlador MultiPrioridade
+# Multi-Priority Controller
 # ---------------------------------------------------------------------------
 
 class MultiPriorityController:
     """
-    Controlador de duas prioridades para Franka Panda + cabo.
+    Two-priority controller for Franka Panda + cable.
 
-    Prioridade 1 (Alta): Tensão no cabo
-      - Aplica force constante tension_desired na direção do cabo (EE→âncora)
-      - Null-space N1 corresponde a movimentos TANGENCIAIS ao cabo
-      - Mantém cabo tensionado sem interferir no movimento em arco
+    Priority 1 (High): Cable tension
+      - Applies constant tension_desired force in cable direction (EE→anchor)
+      - Null-space N1 corresponds to TANGENTIAL cable movements
+      - Keeps cable taut without interfering with arc motion
 
-    Prioridade 2 (Baixa): Posição do end-effector no plano XY
-      - Controle PD Cartesiano 3D (X, Y e Z fixo = fixed_z)
-      - Projetado no null-space de P1 — os movimentos do arco são
-        exatamente os movimentos tangenciais ao cabo ✓
+    Priority 2 (Low): End-effector position in XY plane
+      - 3D Cartesian PD control (X, Y and fixed Z = fixed_z)
+      - Projected onto P1 null-space — arc movements are
+        exactly the cable tangential movements ✓
 
-    Notas sobre a geometria:
-      - Arco: raio = comprimento do cabo (0.5m), centro na âncora
-      - Na posição do arco: ‖EE − âncora‖ = cabo_length
-      - Movimentos ao longo do arco são perpendiculares à direção do cabo
-      → P1 e P2 são ortogonais nessa geometria
+    Geometry notes:
+      - Arc: radius = cable length (0.5m), center at anchor
+      - At arc position: ‖EE − anchor‖ = cable_length
+      - Movements along the arc are perpendicular to cable direction
+      → P1 and P2 are orthogonal in this geometry
 
-    Parâmetros
+    Parameters
     ----------
-    cable_length    : comprimento total do cabo [m]
-    tension_desired : tensão alvo [N] — força aplicada na direção do cabo
-    pos_kp          : ganho proporcional de posição [N/m]
-    pos_kd          : ganho derivativo de posição [N·s/m]
-    fixed_z         : altura Z fixa do end-effector durante o arco [m]
-    damping         : amortecimento DLS para pseudo-inversas
-    null_damping    : ganho de amortecimento no null-space [N·m·s/rad]
-    gravity_comp    : ativar compensação de gravidade
-    max_torque      : limites de torque por junta [N·m]
+    cable_length    : total cable length [m]
+    tension_desired : target tension [N] — force applied in cable direction
+    pos_kp          : position proportional gain [N/m]
+    pos_kd          : position derivative gain [N·s/m]
+    fixed_z         : fixed Z height of end-effector during arc [m]
+    damping         : DLS damping for pseudo-inverses
+    null_damping    : null-space damping gain [N·m·s/rad]
+    gravity_comp    : enable gravity compensation
+    max_torque      : per-joint torque limits [N·m]
     """
 
     def __init__(
@@ -131,18 +131,18 @@ class MultiPriorityController:
         self.gravity_comp = gravity_comp
 
         if max_torque is None:
-            # Limites de torque do Panda (N·m)
+            # Panda torque limits (N·m)
             self.max_torque = np.array([87, 87, 87, 87, 12, 12, 12], dtype=float)
         else:
             self.max_torque = np.asarray(max_torque, dtype=float)
 
-        # Estado interno para diferença finita de velocidade
+        # Internal state for finite-difference velocity
         self._prev_ee_pos: np.ndarray | None = None
         self._prev_time:   float | None       = None
 
     # ------------------------------------------------------------------
     def reset(self) -> None:
-        """Reinicia estado interno."""
+        """Resets internal state."""
         self._prev_ee_pos = None
         self._prev_time   = None
 
@@ -151,64 +151,64 @@ class MultiPriorityController:
         self,
         model:     mujoco.MjModel,
         data:      mujoco.MjData,
-        target_xy: np.ndarray,      # [x, y] alvo no plano XY
+        target_xy: np.ndarray,      # [x, y] target in XY plane
         verbose:   bool = False,
     ) -> tuple[np.ndarray, dict]:
         """
-        Calcula o vetor de torques (7,) para os joints do robô.
+        Computes the torque vector (7,) for the robot joints.
 
-        Parâmetros
+        Parameters
         ----------
         target_xy : array (2,)
-            Posição alvo [x, y] do end-effector no plano XY.
-            A coordenada Z é fixada em self.fixed_z.
+            Target [x, y] position of the end-effector in the XY plane.
+            The Z coordinate is fixed at self.fixed_z.
 
-        Retorna
+        Returns
         -------
-        tau  : array (7,)   — torques a aplicar nos joints
-        info : dict         — informações para logging e debug
+        tau  : array (7,)   — torques to apply at the joints
+        info : dict         — information for logging and debug
         """
-        n = 7  # número de joints do robô
+        n = 7  # number of robot joints
 
-        # ── Posições atuais ─────────────────────────────────────────────
+        # ── Current positions ─────────────────────────────────────────────
         ee_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
         anc_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "anchor_site")
 
-        ee_pos  = data.site_xpos[ee_id].copy()    # (3,) posição EE no mundo
-        anc_pos = data.site_xpos[anc_id].copy()   # (3,) âncora
+        ee_pos  = data.site_xpos[ee_id].copy()    # (3,) EE position in world
+        anc_pos = data.site_xpos[anc_id].copy()   # (3,) anchor
 
-        # Direção e distância EE → âncora
-        cable_vec  = anc_pos - ee_pos             # vetor do EE para a âncora
+        # Direction and distance EE → anchor
+        cable_vec  = anc_pos - ee_pos             # vector from EE to anchor
         cable_dist = float(np.linalg.norm(cable_vec))
 
         if cable_dist > 1e-6:
-            cable_dir_to_anchor = cable_vec / cable_dist   # ĉ: EE → âncora (unit)
+            cable_dir_to_anchor = cable_vec / cable_dist   # ĉ: EE → anchor (unit)
         else:
             cable_dir_to_anchor = np.array([1., 0., 0.])  # fallback
 
         cable_taut = (cable_dist >= self.cable_length * 0.95)
 
-        # ── Jacobiano do EE ─────────────────────────────────────────────
+        # ── EE Jacobian ─────────────────────────────────────────────
         J_ee_full = get_ee_jacobian(model, data)   # (6, 7)
-        J2        = J_ee_full[:3, :]               # (3, 7) translacional
+        J2        = J_ee_full[:3, :]               # (3, 7) translational
         J2_pinv   = pseudo_inverse(J2, self.damping)
 
         # =================================================================
-        # PRIORIDADE 1: Tensão no cabo
+        # PRIORITY 1: Cable tension
         # =================================================================
-        # Física do cabo:
-        #   O cabo puxa o EE em direção à âncora (tensão T).
-        #   Para o robô manter tensão T_desired, deve resistir a esse puxão
-        #   aplicando força IGUAL e OPOSTA — ou seja, empurrando o EE
-        #   para LONGE da âncora (direção âncora→EE).
+        # Cable physics:
+        #   The cable pulls EE toward the anchor (tension T).
+        #   To maintain tension T_desired, the robot must resist this pull
+        #   by applying an EQUAL and OPPOSITE force — i.e., pushing EE
+        #   AWAY from the anchor (anchor→EE direction).
         #
-        # F1 = tension_desired × (−ĉ)   onde ĉ = direção EE→âncora
-        #     = tension_desired × ĉ_away (direção EE saindo da âncora)
+        # F1 = tension_desired × (−ĉ)   where ĉ = EE→anchor direction
+        #     = tension_desired × ĉ_away (EE moving away from anchor)
         #
-        # J1 = ĉᵀ J2  ∈ ℝ^(1×7)  — Jacobiano escalar da tensão (radial)
-        # N1 = I − J1† J1          — null-space = movimentos tangenciais (arco)
+        # J1 = ĉᵀ J2  ∈ ℝ^(1×7)  — scalar tension Jacobian (radial)
+        # N1 = I − J1† J1          — null-space = tangential movements (arc)
 
-        cable_dir_away = -cable_dir_to_anchor                        # (3,) âncora→EE
+        cable_dir_away = -cable_dir_to_anchor                        # (3,) anchor→EE
         F_tension_3d   = self.tension_desired * cable_dir_away       # (3,)
 
         tau_tension  = J2.T @ F_tension_3d                          # (7,)
@@ -217,20 +217,20 @@ class MultiPriorityController:
         J1_pinv = pseudo_inverse(J1, self.damping)                  # (7, 1)
         N1      = np.eye(n) - J1_pinv @ J1                          # (7, 7)
 
-        # ── Estimativa da tensão real (via forças de constraint) ─────────
+        # ── Actual tension estimate (via constraint forces) ─────────
         # tau_constraint ≈ J1ᵀ T_real  →  T_real ≈ (J1 τ_c) / ‖J1‖²
         tau_constraint = data.qfrc_constraint[:n].copy()
-        J1J1T          = float(J1 @ J1.T) + 1e-9  # scalar ‖J1‖² (evita div/0)
+        J1J1T          = float(J1 @ J1.T) + 1e-9  # scalar ‖J1‖² (avoids div/0)
         T_estimated    = float(J1 @ tau_constraint) / J1J1T
-        T_estimated    = max(0.0, T_estimated)   # tensão ≥ 0
+        T_estimated    = max(0.0, T_estimated)   # tension ≥ 0
 
         # =================================================================
-        # PRIORIDADE 2: Posição do end-effector no plano XY (Z fixo)
+        # PRIORITY 2: End-effector position in XY plane (fixed Z)
         # =================================================================
         target_pos = np.array([target_xy[0], target_xy[1], self.fixed_z])
         pos_error  = target_pos - ee_pos           # (3,)
 
-        # Velocidade do EE por diferença finita
+        # EE velocity via finite difference
         t = float(data.time)
         if self._prev_ee_pos is not None and self._prev_time is not None:
             dt = t - self._prev_time
@@ -244,39 +244,39 @@ class MultiPriorityController:
         self._prev_ee_pos = ee_pos.copy()
         self._prev_time   = t
 
-        # Força Cartesiana PD em 3D (inclui componente Z para manter altura fixa)
+        # 3D Cartesian PD force (includes Z component to maintain fixed height)
         F_pos   = self.pos_kp * pos_error - self.pos_kd * ee_vel    # (3,)
         tau_pos = J2.T @ F_pos                                       # (7,)
 
         N2 = np.eye(n) - J2_pinv @ J2                               # (7, 7)
 
         # =================================================================
-        # Composição MultiPrioridade:
+        # Multi-Priority composition:
         #   τ = τ_P1  +  N1 · τ_P2  +  τ_grav  +  N1·N2 · τ_damp
         # =================================================================
         tau = tau_tension + N1 @ tau_pos
 
-        # Compensação de gravidade
+        # Gravity compensation
         if self.gravity_comp:
             tau += data.qfrc_bias[:n]
 
-        # Amortecimento no null-space combinado (N1 ∩ N2)
+        # Damping in combined null-space (N1 ∩ N2)
         tau += N1 @ N2 @ (-self.null_damping * data.qvel[:n])
 
-        # Saturação de torque
+        # Torque saturation
         tau = np.clip(tau, -self.max_torque, self.max_torque)
 
         # ── Log / debug ──────────────────────────────────────────────────
         if verbose:
             print(f"  [t={t:.3f}s]")
             print(f"    EE pos:       {ee_pos.round(4)}")
-            print(f"    Alvo:         {target_pos.round(4)}")
-            print(f"    Erro pos:     {np.linalg.norm(pos_error):.4f} m")
-            print(f"    Dist EE→âncora: {cable_dist:.4f} m "
-                  f"(cabo: {self.cable_length:.3f} m, tenso: {cable_taut})")
-            print(f"    Tensão desejada: {self.tension_desired:.1f} N")
-            print(f"    Tensão estimada: {T_estimated:.2f} N")
-            print(f"    Torques:         {tau.round(2)}")
+            print(f"    Target:       {target_pos.round(4)}")
+            print(f"    Pos error:    {np.linalg.norm(pos_error):.4f} m")
+            print(f"    Dist EE→anchor: {cable_dist:.4f} m "
+                  f"(cable: {self.cable_length:.3f} m, taut: {cable_taut})")
+            print(f"    Desired tension:   {self.tension_desired:.1f} N")
+            print(f"    Estimated tension: {T_estimated:.2f} N")
+            print(f"    Torques:           {tau.round(2)}")
 
         info = {
             "ee_pos":            ee_pos,

@@ -19,7 +19,7 @@ ee_id = mujoco.mj_name2id(
 )
 
 if ee_id == -1:
-    print(f"Erro: Body '{EE_BODY_NAME}' não encontrado!")
+    print(f"Error: Body '{EE_BODY_NAME}' not found!")
     exit(1)
 
 step = 0
