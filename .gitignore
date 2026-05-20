@@ -79,3 +79,7 @@ test_results/
 *.gcov
 *.gcda
 *.gcno
+
+# Project-specific ignores
+SemesterArbeitText/
+.claude/
