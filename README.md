@@ -99,10 +99,10 @@ source /opt/ros/humble/setup.bash
 source ~/franka_ws/install/setup.bash
 
 # Start the grasp sequence
-ros2 service call /cable_grasp/start std_srvs/srv/Trigger
+ros2 service call /cable_grasp/start std_srvs/srv/Trigger "{}"
 
 # Stop
-ros2 service call /cable_grasp/stop std_srvs/srv/Trigger
+ros2 service call /cable_grasp/stop std_srvs/srv/Trigger "{}"
 
 # Monitor FSM state
 ros2 topic echo /cable_grasp/status
