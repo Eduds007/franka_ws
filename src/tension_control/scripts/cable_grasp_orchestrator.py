@@ -631,25 +631,38 @@ class CableGraspOrchestrator(Node):
             self.get_logger().warn(f"traj: unknown plane '{plane}', defaulting to xy")
             ax_a, ax_b = 0, 1
 
-        if shape not in ("circle", "rectangle"):
+        if shape not in ("circle", "rectangle", "triangle"):
             self.get_logger().warn(f"traj: unknown shape '{shape}', defaulting to circle")
             shape = "circle"
 
-        # Unit-cycle parametrisations. Both start at (u=1, v=0) so the trajectory
-        # begins at the home pose after the offset subtraction below.
+        # Unit-cycle parametrisations. All shapes start at (u=1, v=0) so the
+        # trajectory begins at the home pose after the offset subtraction below.
+        # Each shape is inscribed in the unit circle (vertices on |·|=1).
+        _H = math.sqrt(3.0) / 2.0  # sin(60°) — triangle half-height
         def _uv_unit(s: float):
             """s ∈ [0,1) → (u, v) on the unit-cycle for the chosen shape."""
+            s = s - math.floor(s)
             if shape == "circle":
                 theta = 2.0 * math.pi * s
                 return math.cos(theta), math.sin(theta)
-            # rectangle: 2x2 square inscribed in unit circle, corners at (±1, ±1).
-            # Right edge is split so the loop opens and closes at (1, 0).
-            s = s - math.floor(s)
-            if s < 0.125:    return 1.0, 8.0 * s             # right-upper: (1,0)→(1,1)
-            if s < 0.375:    return 2.0 - 8.0 * s, 1.0       # top:        (1,1)→(-1,1)
-            if s < 0.625:    return -1.0, 4.0 - 8.0 * s      # left:       (-1,1)→(-1,-1)
-            if s < 0.875:    return 8.0 * s - 6.0, -1.0      # bottom:     (-1,-1)→(1,-1)
-            return 1.0, 8.0 * s - 8.0                        # right-lower:(1,-1)→(1,0)
+            if shape == "rectangle":
+                # 2x2 square inscribed in unit circle, corners at (±1, ±1).
+                # Right edge is split so the loop opens and closes at (1, 0).
+                if s < 0.125:    return 1.0, 8.0 * s             # right-upper
+                if s < 0.375:    return 2.0 - 8.0 * s, 1.0       # top
+                if s < 0.625:    return -1.0, 4.0 - 8.0 * s      # left
+                if s < 0.875:    return 8.0 * s - 6.0, -1.0      # bottom
+                return 1.0, 8.0 * s - 8.0                        # right-lower
+            # triangle: equilateral inscribed in unit circle.
+            # Vertices A=(1,0), B=(-0.5, √3/2), C=(-0.5, -√3/2); each edge gets 1/3 of the period.
+            if s < 1.0 / 3.0:               # A → B
+                f = 3.0 * s
+                return 1.0 - 1.5 * f, _H * f
+            if s < 2.0 / 3.0:               # B → C (vertical edge)
+                f = 3.0 * s - 1.0
+                return -0.5, _H * (1.0 - 2.0 * f)
+            f = 3.0 * s - 2.0                # C → A
+            return -0.5 + 1.5 * f, _H * (f - 1.0)
 
         # Quaternion from R (column-major to xyzw)
         # R is row-major already (Eigen-style here is column-major in flat array, but
