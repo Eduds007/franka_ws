@@ -113,7 +113,6 @@ class MultiPriorityController:
         tension_desired: float             = 10.0,
         pos_kp:          float             = 150.0,
         pos_kd:          float             = 15.0,
-        fixed_z:         float             = 0.40,
         damping:         float             = 5e-3,
         null_damping:    float             = 5.0,
         gravity_comp:    bool              = True,
@@ -124,7 +123,6 @@ class MultiPriorityController:
 
         self.pos_kp   = pos_kp
         self.pos_kd   = pos_kd
-        self.fixed_z  = fixed_z
 
         self.damping      = damping
         self.null_damping = null_damping
@@ -149,19 +147,18 @@ class MultiPriorityController:
     # ------------------------------------------------------------------
     def compute(
         self,
-        model:     mujoco.MjModel,
-        data:      mujoco.MjData,
-        target_xy: np.ndarray,      # [x, y] target in XY plane
-        verbose:   bool = False,
+        model:      mujoco.MjModel,
+        data:       mujoco.MjData,
+        target_pos: np.ndarray,     # [x, y, z] 3-D target for the end-effector
+        verbose:    bool = False,
     ) -> tuple[np.ndarray, dict]:
         """
         Computes the torque vector (7,) for the robot joints.
 
         Parameters
         ----------
-        target_xy : array (2,)
-            Target [x, y] position of the end-effector in the XY plane.
-            The Z coordinate is fixed at self.fixed_z.
+        target_pos : array (3,)
+            Target [x, y, z] position of the end-effector.
 
         Returns
         -------
@@ -227,7 +224,7 @@ class MultiPriorityController:
         # =================================================================
         # PRIORITY 2: End-effector position in XY plane (fixed Z)
         # =================================================================
-        target_pos = np.array([target_xy[0], target_xy[1], self.fixed_z])
+        target_pos = np.asarray(target_pos, dtype=float)
         pos_error  = target_pos - ee_pos           # (3,)
 
         # EE velocity via finite difference

@@ -50,8 +50,8 @@ CABLE_LENGTH = 0.50
 # Trajectory parameters — same shapes as cable_grasp_orchestrator
 TRAJ_SHAPE   = "circle"   # "circle" | "rectangle" | "triangle"
 TRAJ_RADIUS  = 0.40       # m
-TRAJ_Z_FIXED = 0.40       # m — fixed EE height during task
 TRAJ_PERIOD  = 20.0       # s — one full cycle
+TRAJ_PLANE   = "yz"       # "xy" | "xz" | "yz"
 
 # Controller parameters
 TENSION_DESIRED = 10.0
@@ -272,15 +272,25 @@ def _uv_unit(s: float) -> tuple[float, float]:
     return -0.5 + 1.5 * f, _H * (f - 1.0)
 
 
-def trajectory_target(t: float, center_xy: np.ndarray) -> np.ndarray:
-    """Returns target [x, y] at time t from task start.
+def trajectory_target(t: float, center: np.ndarray) -> np.ndarray:
+    """Returns 3-D target [x, y, z] at time t from task start.
 
     Identical parametrization to cable_grasp_orchestrator: trajectory
-    starts at center_xy (t=0) and traces TRAJ_SHAPE with TRAJ_RADIUS.
+    starts at center (t=0) and traces TRAJ_SHAPE with TRAJ_RADIUS on TRAJ_PLANE.
     """
     s = (t / TRAJ_PERIOD) - math.floor(t / TRAJ_PERIOD)
     u, v = _uv_unit(s)
-    return center_xy + np.array([TRAJ_RADIUS * (u - 1.0), TRAJ_RADIUS * v])
+    pos = center.copy()
+    if TRAJ_PLANE == "xy":
+        pos[0] += TRAJ_RADIUS * (u - 1.0)
+        pos[1] += TRAJ_RADIUS * v
+    elif TRAJ_PLANE == "xz":
+        pos[0] += TRAJ_RADIUS * (u - 1.0)
+        pos[2] += TRAJ_RADIUS * v
+    else:  # yz
+        pos[1] += TRAJ_RADIUS * (u - 1.0)
+        pos[2] += TRAJ_RADIUS * v
+    return pos
 
 
 # ---------------------------------------------------------------------------
@@ -334,13 +344,13 @@ def reset_simulation(model: mujoco.MjModel, data: mujoco.MjData,
 # ---------------------------------------------------------------------------
 
 def update_target_marker(model: mujoco.MjModel, data: mujoco.MjData,
-                         xy: np.ndarray) -> None:
+                         pos: np.ndarray) -> None:
     body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "target_marker")
     if body_id < 0:
         return
     mocap_id = model.body_mocapid[body_id]
     if mocap_id >= 0:
-        data.mocap_pos[mocap_id] = [xy[0], xy[1], TRAJ_Z_FIXED]
+        data.mocap_pos[mocap_id] = pos[:3]
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +414,6 @@ def run_simulation() -> None:
         tension_desired = TENSION_DESIRED,
         pos_kp          = POS_KP,
         pos_kd          = POS_KD,
-        fixed_z         = TRAJ_Z_FIXED,
         null_damping    = NULL_DAMPING,
         gravity_comp    = True,
     )
@@ -437,8 +446,8 @@ def run_simulation() -> None:
         viewer.cam.elevation = -30
         viewer.cam.azimuth   = 150
 
-        arc_start_time:  "float | None"      = None
-        traj_center_xy:  "np.ndarray | None" = None
+        arc_start_time: "float | None"      = None
+        traj_center:    "np.ndarray | None" = None
 
         while viewer.is_running() and not state["quit"]:
 
@@ -448,7 +457,7 @@ def run_simulation() -> None:
                 state["step_count"] = 0
                 state["reset"]      = False
                 arc_start_time      = None
-                traj_center_xy      = None
+                traj_center         = None
                 print("[INFO] Simulation reset.")
 
             if not state["paused"]:
@@ -468,26 +477,25 @@ def run_simulation() -> None:
                     if arc_start_time is None:
                         arc_start_time = t
                         ee_id_tmp = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
-                        traj_center_xy = data.site_xpos[ee_id_tmp][:2].copy()
-                        print(f"[INFO] Trajectory center: {traj_center_xy}  shape={TRAJ_SHAPE}  r={TRAJ_RADIUS}m")
-                    arc_t     = t - arc_start_time
-                    target_xy = trajectory_target(arc_t, traj_center_xy)
+                        traj_center = data.site_xpos[ee_id_tmp].copy()
+                        print(f"[INFO] Trajectory center: {traj_center}  shape={TRAJ_SHAPE}  plane={TRAJ_PLANE}  r={TRAJ_RADIUS}m")
+                    arc_t      = t - arc_start_time
+                    target_pos = trajectory_target(arc_t, traj_center)
 
-                    tau, info = ctrl.compute(model, data, target_xy, verbose=verbose)
+                    tau, info = ctrl.compute(model, data, target_pos, verbose=verbose)
                     data.ctrl[:7] = tau
                     data.ctrl[7]  = GRIPPER_CLOSE_CTRL
 
                     if verbose:
-                        ee = info["ee_pos"]
-                        print(f"  [t={t:.1f}s] TASK | Target: ({target_xy[0]:.3f}, {target_xy[1]:.3f}) | "
+                        print(f"  [t={t:.1f}s] TASK | Target: {np.round(target_pos, 3)} | "
                               f"Error: {info['pos_error']:.4f}m | "
                               f"Tension: {info['tension_estimated']:.1f}N | "
                               f"Taut: {info['cable_taut']}")
 
-                    update_target_marker(model, data, target_xy)
+                    update_target_marker(model, data, target_pos)
 
                     if step_count % LOG_EVERY_N_STEPS == 0:
-                        logger.write(t, info, target_xy)
+                        logger.write(t, info, target_pos[:2])
 
                 mujoco.mj_step(model, data)
                 state["step_count"] += 1
@@ -524,7 +532,6 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
         tension_desired = TENSION_DESIRED,
         pos_kp          = POS_KP,
         pos_kd          = POS_KD,
-        fixed_z         = TRAJ_Z_FIXED,
         null_damping    = NULL_DAMPING,
         gravity_comp    = True,
     )
@@ -538,6 +545,7 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
     log_ee_z:    list[float] = []
     log_tgt_x:   list[float] = []
     log_tgt_y:   list[float] = []
+    log_tgt_z:   list[float] = []
     log_tension: list[float] = []
     log_error:   list[float] = []
 
@@ -548,29 +556,29 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
     print(f"[INFO] Running {duration}s ({steps} steps @ {1/dt:.0f}Hz) ...")
     _print_header()
 
-    arc_start_time:  "float | None"      = None
-    traj_center_xy:  "np.ndarray | None" = None
+    arc_start_time: "float | None"      = None
+    traj_center:    "np.ndarray | None" = None
 
     for i in range(steps):
         t = float(data.time)
 
         if grasp_sm.phase != GraspPhase.TASK:
-            tau, done = grasp_sm.step(model, data)
+            tau, _ = grasp_sm.step(model, data)
             data.ctrl[:7] = tau
         else:
             if arc_start_time is None:
                 arc_start_time = t
                 ee_id_tmp = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
-                traj_center_xy = data.site_xpos[ee_id_tmp][:2].copy()
-            arc_t     = t - arc_start_time
-            target_xy = trajectory_target(arc_t, traj_center_xy)
+                traj_center = data.site_xpos[ee_id_tmp].copy()
+            arc_t      = t - arc_start_time
+            target_pos = trajectory_target(arc_t, traj_center)
 
-            tau, info = ctrl.compute(model, data, target_xy)
+            tau, info = ctrl.compute(model, data, target_pos)
             data.ctrl[:7] = tau
             data.ctrl[7]  = GRIPPER_CLOSE_CTRL
 
             if i % LOG_EVERY_N_STEPS == 0:
-                logger.write(t, info, target_xy)
+                logger.write(t, info, target_pos[:2])
 
             if i % 50 == 0:
                 ee = info["ee_pos"]
@@ -578,15 +586,16 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
                 log_ee_x.append(ee[0])
                 log_ee_y.append(ee[1])
                 log_ee_z.append(ee[2])
-                log_tgt_x.append(target_xy[0])
-                log_tgt_y.append(target_xy[1])
+                log_tgt_x.append(target_pos[0])
+                log_tgt_y.append(target_pos[1])
+                log_tgt_z.append(target_pos[2])
                 log_tension.append(info["tension_estimated"])
                 log_error.append(info["pos_error"])
 
             if i % print_interval == 0:
                 ee = info["ee_pos"]
                 print(f"  [t={t:.1f}s]  EE: ({ee[0]:.3f}, {ee[1]:.3f}, {ee[2]:.3f}) | "
-                      f"Target: ({target_xy[0]:.3f}, {target_xy[1]:.3f}) | "
+                      f"Target: {np.round(target_pos, 3)} | "
                       f"Tension: {info['tension_estimated']:.1f}N | "
                       f"Err: {info['pos_error']:.4f}m")
 
@@ -600,24 +609,25 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
 
     print("[INFO] Generating plots ...")
 
+    # Axis labels and data depend on the active plane
+    _plane_axes = {"xy": (0, 1, "X", "Y"), "xz": (0, 2, "X", "Z"), "yz": (1, 2, "Y", "Z")}
+    _ai, _bi, _alabel, _blabel = _plane_axes.get(TRAJ_PLANE, (0, 1, "X", "Y"))
+    _ee_a  = [log_ee_x, log_ee_y, log_ee_z][_ai]
+    _ee_b  = [log_ee_x, log_ee_y, log_ee_z][_bi]
+    _tgt_a = [log_tgt_x, log_tgt_y, log_tgt_z][_ai]
+    _tgt_b = [log_tgt_x, log_tgt_y, log_tgt_z][_bi]
+
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     fig.suptitle("Franka Panda + Cable — MultiPriority Controller\n"
-                 f"P1: Tension ≈ {TENSION_DESIRED}N  |  P2: 120° Arc in XY plane",
+                 f"P1: Tension ≈ {TENSION_DESIRED}N  |  "
+                 f"P2: {TRAJ_SHAPE} r={TRAJ_RADIUS}m plane={TRAJ_PLANE}",
                  fontsize=12, fontweight="bold")
 
     ax = axes[0, 0]
-    ax.plot(log_tgt_x, log_tgt_y, "g--", linewidth=2.0, label="Target (arc)")
-    ax.plot(log_ee_x,  log_ee_y,  "b-",  linewidth=1.5, label="EE actual",  alpha=0.8)
-    ax.scatter([ANCHOR_POS[0]], [ANCHOR_POS[1]], c="orange", s=120,
-               zorder=5, label=f"Anchor ({ANCHOR_POS[0]}, {ANCHOR_POS[1]})")
-    ax.scatter([0.0], [0.0], c="red", s=80, marker="^",
-               zorder=5, label="Robot base")
-    theta_ref = np.linspace(ARC_ANGLE_START, ARC_ANGLE_END, 100)
-    ax.plot(ARC_CENTER_X + ARC_RADIUS * np.cos(theta_ref),
-            ARC_CENTER_Y + ARC_RADIUS * np.sin(theta_ref),
-            "g:", linewidth=1.0, alpha=0.5)
-    ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)")
-    ax.set_title("EE Trajectory — XY Plane")
+    ax.plot(_tgt_a, _tgt_b, "g--", linewidth=2.0, label=f"Target ({TRAJ_SHAPE})")
+    ax.plot(_ee_a,  _ee_b,  "b-",  linewidth=1.5, label="EE actual", alpha=0.8)
+    ax.set_xlabel(f"{_alabel} (m)"); ax.set_ylabel(f"{_blabel} (m)")
+    ax.set_title(f"EE Trajectory — {TRAJ_PLANE.upper()} Plane")
     ax.legend(fontsize=8); ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
 
     ax = axes[0, 1]
@@ -640,9 +650,8 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
     ax.plot(log_t, log_tgt_x, "b--", linewidth=1.0, label="EE X target", alpha=0.7)
     ax.plot(log_t, log_ee_y,  "r-",  linewidth=1.5, label="EE Y actual")
     ax.plot(log_t, log_tgt_y, "r--", linewidth=1.0, label="EE Y target", alpha=0.7)
-    ax.plot(log_t, log_ee_z,  "g-",  linewidth=1.0, label="EE Z actual", alpha=0.6)
-    ax.axhline(TRAJ_Z_FIXED, color="g", linestyle=":", linewidth=0.8,
-               label=f"Z target ({TRAJ_Z_FIXED}m)", alpha=0.6)
+    ax.plot(log_t, log_ee_z,  "g-",  linewidth=1.0, label="EE Z actual")
+    ax.plot(log_t, log_tgt_z, "g--", linewidth=1.0, label="EE Z target", alpha=0.7)
     ax.set_xlabel("Time (s)"); ax.set_ylabel("Position (m)")
     ax.set_title("EE Coordinates vs Time")
     ax.legend(fontsize=7, ncol=2); ax.grid(True, alpha=0.3)
@@ -665,8 +674,8 @@ def _print_header() -> None:
     print(f"  Anchor:         {ANCHOR_POS}")
     print(f"  Connector:      {CONNECTOR_POS_INIT}  (on the floor)")
     print(f"  Grasp phases:   REACH_ABOVE → LOWER → CLOSE → WELD → LIFT → TASK")
-    print(f"  Trajectory:     shape={TRAJ_SHAPE}  radius={TRAJ_RADIUS}m  period={TRAJ_PERIOD}s")
-    print(f"  Fixed Z:        {TRAJ_Z_FIXED}m  (center captured from EE at task start)")
+    print(f"  Trajectory:     shape={TRAJ_SHAPE}  plane={TRAJ_PLANE}  radius={TRAJ_RADIUS}m  period={TRAJ_PERIOD}s")
+    print(f"  Center:         captured from EE position at task start")
     print(f"  Target tension: {TENSION_DESIRED} N")
     print("-" * 65)
     print("  SPACE → pause/resume  |  R → reset  |  Q → quit")
