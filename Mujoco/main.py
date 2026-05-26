@@ -48,7 +48,7 @@ ANCHOR_POS = np.array([0.8, 0.0, 0.4])
 CABLE_LENGTH = 0.50
 
 # Trajectory parameters — same shapes as cable_grasp_orchestrator
-TRAJ_SHAPE   = "circle"   # "circle" | "rectangle" | "triangle"
+TRAJ_SHAPE   = "rectangle"   # "circle" | "rectangle" | "triangle"
 TRAJ_RADIUS  = 0.40       # m
 TRAJ_PERIOD  = 20.0       # s — one full cycle
 TRAJ_PLANE   = "yz"       # "xy" | "xz" | "yz"
