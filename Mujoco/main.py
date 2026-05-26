@@ -24,6 +24,8 @@ import time
 import datetime
 from enum import Enum, auto
 
+import math
+
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -45,14 +47,11 @@ ANCHOR_POS = np.array([0.8, 0.0, 0.4])
 # Cable parameters
 CABLE_LENGTH = 0.50
 
-# Arc trajectory parameters (XY plane, fixed Z)
-ARC_CENTER_X    = 0.80
-ARC_CENTER_Y    = 0.00
-ARC_RADIUS      = 0.50
-ARC_Z_FIXED     = 0.40
-ARC_ANGLE_START = np.deg2rad(120.0)
-ARC_ANGLE_END   = np.deg2rad(240.0)
-ARC_PERIOD      = 20.0
+# Trajectory parameters — same shapes as cable_grasp_orchestrator
+TRAJ_SHAPE   = "circle"   # "circle" | "rectangle" | "triangle"
+TRAJ_RADIUS  = 0.40       # m
+TRAJ_Z_FIXED = 0.40       # m — fixed EE height during task
+TRAJ_PERIOD  = 20.0       # s — one full cycle
 
 # Controller parameters
 TENSION_DESIRED = 10.0
@@ -69,7 +68,7 @@ GRASP_APPROACH_HEIGHT_OFFSET = 0.18    # m above the connector
 GRASP_HEIGHT_OFFSET          = 0.005   # m — contact height
 REACH_POS_TOL                = 0.015   # m
 LOWER_POS_TOL                = 0.012   # m
-LIFT_HEIGHT                  = 0.40    # m (= ARC_Z_FIXED)
+LIFT_HEIGHT                  = 0.40    # m (= TRAJ_Z_FIXED)
 LIFT_POS_TOL                 = 0.020   # m
 CLOSE_GRIPPER_DURATION       = 1.0     # s — time to close fingers
 WELD_ACTIVATE_DELAY          = 0.3     # s — time for weld to settle
@@ -247,16 +246,41 @@ class GraspStateMachine:
 
 
 # ---------------------------------------------------------------------------
-# Arc trajectory — XY plane
+# Trajectory — same parametrization as cable_grasp_orchestrator
 # ---------------------------------------------------------------------------
 
-def arc_trajectory(t: float) -> np.ndarray:
-    """Returns target [x, y] in the XY plane at time t."""
-    frac  = (np.sin(2.0 * np.pi * t / ARC_PERIOD - np.pi / 2.0) + 1.0) / 2.0
-    angle = ARC_ANGLE_START + frac * (ARC_ANGLE_END - ARC_ANGLE_START)
-    x = ARC_CENTER_X + ARC_RADIUS * np.cos(angle)
-    y = ARC_CENTER_Y + ARC_RADIUS * np.sin(angle)
-    return np.array([x, y])
+def _uv_unit(s: float) -> tuple[float, float]:
+    """s ∈ [0,1) → (u, v) on the unit-cycle for TRAJ_SHAPE."""
+    _H = math.sqrt(3.0) / 2.0
+    if TRAJ_SHAPE == "circle":
+        theta = 2.0 * math.pi * s
+        return math.cos(theta), math.sin(theta)
+    if TRAJ_SHAPE == "rectangle":
+        if s < 0.125:  return 1.0, 8.0 * s
+        if s < 0.375:  return 2.0 - 8.0 * s, 1.0
+        if s < 0.625:  return -1.0, 4.0 - 8.0 * s
+        if s < 0.875:  return 8.0 * s - 6.0, -1.0
+        return 1.0, 8.0 * s - 8.0
+    # triangle
+    if s < 1.0 / 3.0:
+        f = 3.0 * s
+        return 1.0 - 1.5 * f, _H * f
+    if s < 2.0 / 3.0:
+        f = 3.0 * s - 1.0
+        return -0.5, _H * (1.0 - 2.0 * f)
+    f = 3.0 * s - 2.0
+    return -0.5 + 1.5 * f, _H * (f - 1.0)
+
+
+def trajectory_target(t: float, center_xy: np.ndarray) -> np.ndarray:
+    """Returns target [x, y] at time t from task start.
+
+    Identical parametrization to cable_grasp_orchestrator: trajectory
+    starts at center_xy (t=0) and traces TRAJ_SHAPE with TRAJ_RADIUS.
+    """
+    s = (t / TRAJ_PERIOD) - math.floor(t / TRAJ_PERIOD)
+    u, v = _uv_unit(s)
+    return center_xy + np.array([TRAJ_RADIUS * (u - 1.0), TRAJ_RADIUS * v])
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +340,7 @@ def update_target_marker(model: mujoco.MjModel, data: mujoco.MjData,
         return
     mocap_id = model.body_mocapid[body_id]
     if mocap_id >= 0:
-        data.mocap_pos[mocap_id] = [xy[0], xy[1], ARC_Z_FIXED]
+        data.mocap_pos[mocap_id] = [xy[0], xy[1], TRAJ_Z_FIXED]
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +404,7 @@ def run_simulation() -> None:
         tension_desired = TENSION_DESIRED,
         pos_kp          = POS_KP,
         pos_kd          = POS_KD,
-        fixed_z         = ARC_Z_FIXED,
+        fixed_z         = TRAJ_Z_FIXED,
         null_damping    = NULL_DAMPING,
         gravity_comp    = True,
     )
@@ -413,7 +437,8 @@ def run_simulation() -> None:
         viewer.cam.elevation = -30
         viewer.cam.azimuth   = 150
 
-        arc_start_time: "float | None" = None
+        arc_start_time:  "float | None"      = None
+        traj_center_xy:  "np.ndarray | None" = None
 
         while viewer.is_running() and not state["quit"]:
 
@@ -423,6 +448,7 @@ def run_simulation() -> None:
                 state["step_count"] = 0
                 state["reset"]      = False
                 arc_start_time      = None
+                traj_center_xy      = None
                 print("[INFO] Simulation reset.")
 
             if not state["paused"]:
@@ -433,16 +459,19 @@ def run_simulation() -> None:
                 if grasp_sm.phase != GraspPhase.TASK:
                     tau, done = grasp_sm.step(model, data)
                     data.ctrl[:7] = tau
-                    if done and arc_start_time is None:
-                        arc_start_time = t
                     if verbose:
                         ee_id  = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
                         ee_pos = data.site_xpos[ee_id]
                         print(f"  [t={t:.1f}s] GRASP: {grasp_sm.phase.name} | "
                               f"EE: ({ee_pos[0]:.3f}, {ee_pos[1]:.3f}, {ee_pos[2]:.3f})")
                 else:
-                    arc_t     = t - (arc_start_time if arc_start_time is not None else t)
-                    target_xy = arc_trajectory(arc_t)
+                    if arc_start_time is None:
+                        arc_start_time = t
+                        ee_id_tmp = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+                        traj_center_xy = data.site_xpos[ee_id_tmp][:2].copy()
+                        print(f"[INFO] Trajectory center: {traj_center_xy}  shape={TRAJ_SHAPE}  r={TRAJ_RADIUS}m")
+                    arc_t     = t - arc_start_time
+                    target_xy = trajectory_target(arc_t, traj_center_xy)
 
                     tau, info = ctrl.compute(model, data, target_xy, verbose=verbose)
                     data.ctrl[:7] = tau
@@ -495,7 +524,7 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
         tension_desired = TENSION_DESIRED,
         pos_kp          = POS_KP,
         pos_kd          = POS_KD,
-        fixed_z         = ARC_Z_FIXED,
+        fixed_z         = TRAJ_Z_FIXED,
         null_damping    = NULL_DAMPING,
         gravity_comp    = True,
     )
@@ -519,7 +548,8 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
     print(f"[INFO] Running {duration}s ({steps} steps @ {1/dt:.0f}Hz) ...")
     _print_header()
 
-    arc_start_time: "float | None" = None
+    arc_start_time:  "float | None"      = None
+    traj_center_xy:  "np.ndarray | None" = None
 
     for i in range(steps):
         t = float(data.time)
@@ -527,11 +557,13 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
         if grasp_sm.phase != GraspPhase.TASK:
             tau, done = grasp_sm.step(model, data)
             data.ctrl[:7] = tau
-            if done and arc_start_time is None:
-                arc_start_time = t
         else:
-            arc_t     = t - (arc_start_time if arc_start_time is not None else t)
-            target_xy = arc_trajectory(arc_t)
+            if arc_start_time is None:
+                arc_start_time = t
+                ee_id_tmp = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+                traj_center_xy = data.site_xpos[ee_id_tmp][:2].copy()
+            arc_t     = t - arc_start_time
+            target_xy = trajectory_target(arc_t, traj_center_xy)
 
             tau, info = ctrl.compute(model, data, target_xy)
             data.ctrl[:7] = tau
@@ -609,8 +641,8 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
     ax.plot(log_t, log_ee_y,  "r-",  linewidth=1.5, label="EE Y actual")
     ax.plot(log_t, log_tgt_y, "r--", linewidth=1.0, label="EE Y target", alpha=0.7)
     ax.plot(log_t, log_ee_z,  "g-",  linewidth=1.0, label="EE Z actual", alpha=0.6)
-    ax.axhline(ARC_Z_FIXED, color="g", linestyle=":", linewidth=0.8,
-               label=f"Z target ({ARC_Z_FIXED}m)", alpha=0.6)
+    ax.axhline(TRAJ_Z_FIXED, color="g", linestyle=":", linewidth=0.8,
+               label=f"Z target ({TRAJ_Z_FIXED}m)", alpha=0.6)
     ax.set_xlabel("Time (s)"); ax.set_ylabel("Position (m)")
     ax.set_title("EE Coordinates vs Time")
     ax.legend(fontsize=7, ncol=2); ax.grid(True, alpha=0.3)
@@ -633,8 +665,8 @@ def _print_header() -> None:
     print(f"  Anchor:         {ANCHOR_POS}")
     print(f"  Connector:      {CONNECTOR_POS_INIT}  (on the floor)")
     print(f"  Grasp phases:   REACH_ABOVE → LOWER → CLOSE → WELD → LIFT → TASK")
-    print(f"  Arc center XY:  ({ARC_CENTER_X:.2f}, {ARC_CENTER_Y:.2f})  Fixed Z: {ARC_Z_FIXED}m")
-    print(f"  Arc radius:     {ARC_RADIUS} m  |  Period: {ARC_PERIOD} s")
+    print(f"  Trajectory:     shape={TRAJ_SHAPE}  radius={TRAJ_RADIUS}m  period={TRAJ_PERIOD}s")
+    print(f"  Fixed Z:        {TRAJ_Z_FIXED}m  (center captured from EE at task start)")
     print(f"  Target tension: {TENSION_DESIRED} N")
     print("-" * 65)
     print("  SPACE → pause/resume  |  R → reset  |  Q → quit")
