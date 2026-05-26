@@ -27,7 +27,7 @@ cable_grasp_orchestrator:
 
     # Trajectory in null-space of the cable tension task.
     trajectory.enabled: true
-    trajectory.radius_m: 0.20
+    trajectory.radius_m: 0.40
     trajectory.period_s: 8.0
     trajectory.rate_hz: 100.0
     trajectory.plane: "xy"          # xy | xz | yz
