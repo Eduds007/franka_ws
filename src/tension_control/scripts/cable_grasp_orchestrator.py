@@ -111,6 +111,7 @@ class CableGraspOrchestrator(Node):
 
         # Trajectory
         self.declare_parameter("trajectory.enabled", True)
+        self.declare_parameter("trajectory.shape", "circle")  # circle | rectangle
         self.declare_parameter("trajectory.radius_m", 0.05)
         self.declare_parameter("trajectory.period_s", 8.0)
         self.declare_parameter("trajectory.rate_hz", 100.0)
@@ -614,6 +615,7 @@ class CableGraspOrchestrator(Node):
         center = self._home_T[:3, 3].copy()
         R = self._home_T[:3, :3].copy()  # orientation kept fixed to home
 
+        shape = str(self.get_parameter("trajectory.shape").value).lower()
         radius = float(self.get_parameter("trajectory.radius_m").value)
         period = max(0.1, float(self.get_parameter("trajectory.period_s").value))
         rate = max(1.0, float(self.get_parameter("trajectory.rate_hz").value))
@@ -629,29 +631,49 @@ class CableGraspOrchestrator(Node):
             self.get_logger().warn(f"traj: unknown plane '{plane}', defaulting to xy")
             ax_a, ax_b = 0, 1
 
+        if shape not in ("circle", "rectangle"):
+            self.get_logger().warn(f"traj: unknown shape '{shape}', defaulting to circle")
+            shape = "circle"
+
+        # Unit-cycle parametrisations. Both start at (u=1, v=0) so the trajectory
+        # begins at the home pose after the offset subtraction below.
+        def _uv_unit(s: float):
+            """s ∈ [0,1) → (u, v) on the unit-cycle for the chosen shape."""
+            if shape == "circle":
+                theta = 2.0 * math.pi * s
+                return math.cos(theta), math.sin(theta)
+            # rectangle: 2x2 square inscribed in unit circle, corners at (±1, ±1).
+            # Right edge is split so the loop opens and closes at (1, 0).
+            s = s - math.floor(s)
+            if s < 0.125:    return 1.0, 8.0 * s             # right-upper: (1,0)→(1,1)
+            if s < 0.375:    return 2.0 - 8.0 * s, 1.0       # top:        (1,1)→(-1,1)
+            if s < 0.625:    return -1.0, 4.0 - 8.0 * s      # left:       (-1,1)→(-1,-1)
+            if s < 0.875:    return 8.0 * s - 6.0, -1.0      # bottom:     (-1,-1)→(1,-1)
+            return 1.0, 8.0 * s - 8.0                        # right-lower:(1,-1)→(1,0)
+
         # Quaternion from R (column-major to xyzw)
         # R is row-major already (Eigen-style here is column-major in flat array, but
         # we're working with the 3x3 numpy view which behaves naturally).
         qw, qx, qy, qz = self._matrix_to_quat(R)
 
         self.get_logger().info(
-            f"traj: circle r={radius} m, period={period} s, rate={rate} Hz, plane={plane}")
+            f"traj: {shape} r={radius} m, period={period} s, rate={rate} Hz, plane={plane}")
 
-        omega = 2.0 * math.pi / period
         t0 = self.get_clock().now()
         dt = 1.0 / rate
 
         while rclpy.ok() and not self._traj_stop.is_set():
             now = self.get_clock().now()
             t = (now - t0).nanoseconds * 1e-9
+            s = (t / period) - math.floor(t / period) if period > 0 else 0.0
+            u, v = _uv_unit(s)
             offset = np.zeros(3)
-            offset[ax_a] = radius * math.cos(omega * t)
-            offset[ax_b] = radius * math.sin(omega * t)
-            # subtract starting offset so the first sample equals the home position
-            if abs(t) < 1e-9:
-                offset[ax_a] = radius  # cos(0)=1
-                offset[ax_b] = 0.0
-            target = center + (offset - np.array([radius if i == ax_a else 0.0 for i in range(3)]))
+            offset[ax_a] = radius * u
+            offset[ax_b] = radius * v
+            # subtract the t=0 offset (which is (radius, 0)) so the first sample
+            # equals the home position for both circle and rectangle.
+            target = center + offset - np.array(
+                [radius if i == ax_a else 0.0 for i in range(3)])
 
             ps = PoseStamped()
             ps.header.stamp = now.to_msg()
