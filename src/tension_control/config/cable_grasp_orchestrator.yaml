@@ -27,11 +27,11 @@ cable_grasp_orchestrator:
 
     # Trajectory in null-space of the cable tension task.
     trajectory.enabled: true
-    trajectory.shape: "triangle"    # circle | rectangle | triangle
+    trajectory.shape: "circle"      # circle | rectangle | triangle
     trajectory.radius_m: 0.10       # circle radius OR half-side length of the rectangle (square)
     trajectory.period_s: 8.0
     trajectory.rate_hz: 100.0
-    trajectory.plane: "xy"          # xy | xz | yz
+    trajectory.plane: "xz"          # xy | xz | yz
     trajectory.duration_s: 0.0      # 0 → run forever (until /cable_grasp/stop)
 
     # MoveIt motion limits for approach moves (grasp + home transitions)
