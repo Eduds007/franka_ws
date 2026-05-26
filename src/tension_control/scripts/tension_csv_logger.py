@@ -5,7 +5,9 @@ Subscribes to /multi_priority_controller/log_state (std_msgs/Float64MultiArray)
 and writes one row per message to a timestamped CSV file. The controller
 publishes at ~100 Hz with the layout:
 
-    [t_sec, T_des_target, T_des_active, T_meas, ee_x, ee_y, ee_z]
+    [t_sec, T_des_target, T_des_active, T_meas,
+     ee_x, ee_y, ee_z,
+     ee_des_x, ee_des_y, ee_des_z]
 
 Default output path: ~/franka_ws/logs/tension_<YYYYMMDD_HHMMSS>.csv
 Override with the ROS param `output_dir` (string).
@@ -23,7 +25,8 @@ from std_msgs.msg import Float64MultiArray
 DEFAULT_OUTPUT_DIR = str(Path.home() / "franka_ws" / "logs")
 TOPIC = "/multi_priority_controller/log_state"
 COLUMNS = ["t_sec", "T_des_target_N", "T_des_active_N", "T_meas_N",
-           "ee_x_m", "ee_y_m", "ee_z_m"]
+           "ee_x_m", "ee_y_m", "ee_z_m",
+           "ee_des_x_m", "ee_des_y_m", "ee_des_z_m"]
 
 
 class TensionCsvLogger(Node):

@@ -118,7 +118,7 @@ CallbackReturn MultiPriorityController::on_configure(
   log_pub_ = std::make_shared<
       realtime_tools::RealtimePublisher<std_msgs::msg::Float64MultiArray>>(log_publisher);
   // Pre-allocate so update() never resizes from RT context.
-  log_pub_->msg_.data.assign(7, 0.0);
+  log_pub_->msg_.data.assign(10, 0.0);
 
   RCLCPP_INFO(get_node()->get_logger(),
               "Configured. anchor=[%.3f, %.3f, %.3f], T_des=%.1f N",
@@ -444,6 +444,9 @@ controller_interface::return_type MultiPriorityController::update(
       data[4] = p_ee.x();
       data[5] = p_ee.y();
       data[6] = p_ee.z();
+      data[7] = p_des_rt_.x();       // desired EE position (Task 2 setpoint)
+      data[8] = p_des_rt_.y();
+      data[9] = p_des_rt_.z();
       log_pub_->unlockAndPublish();
     }
   }
