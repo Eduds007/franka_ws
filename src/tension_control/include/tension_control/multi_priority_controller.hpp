@@ -22,6 +22,8 @@
 #include <controller_interface/controller_interface.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <realtime_tools/realtime_publisher.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include "franka/robot_state.h"
 #include "franka_semantic_components/franka_robot_model.hpp"
 
@@ -163,6 +165,14 @@ class MultiPriorityController : public controller_interface::ControllerInterface
   Eigen::Matrix3d R_des_rt_;
 
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_sub_;
+
+  // Diagnostic publisher: [t, T_des_target, T_des_active, T_meas, ee_x, ee_y, ee_z].
+  // Real-time safe via realtime_tools::RealtimePublisher (try-lock, no allocations
+  // inside update()). Downsampled from the 1 kHz update loop to ~100 Hz.
+  std::shared_ptr<
+      realtime_tools::RealtimePublisher<std_msgs::msg::Float64MultiArray>> log_pub_;
+  unsigned int log_decim_counter_{0};
+  static constexpr unsigned int kLogDecimation = 10;  // 1 kHz / 10 = 100 Hz
 
   void updateJointStates();
 };

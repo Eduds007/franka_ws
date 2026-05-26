@@ -23,6 +23,7 @@ find_package(pluginlib REQUIRED)
 find_package(franka_semantic_components REQUIRED)
 find_package(franka_hardware REQUIRED)
 find_package(franka_msgs REQUIRED)
+find_package(realtime_tools REQUIRED)
 
 # ── Multi-priority controller (ros2_control plugin) ─────────────────────────
 add_library(multi_priority_controller SHARED
@@ -38,6 +39,8 @@ ament_target_dependencies(multi_priority_controller
   hardware_interface
   pluginlib
   geometry_msgs
+  std_msgs
+  realtime_tools
   franka_semantic_components
   franka_hardware
   franka_msgs
@@ -85,6 +88,7 @@ install(PROGRAMS
   scripts/gripper_control.py
   scripts/cable_grasp_orchestrator.py
   scripts/circle_trajectory.py
+  scripts/tension_csv_logger.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

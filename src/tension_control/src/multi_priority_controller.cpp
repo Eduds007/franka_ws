@@ -113,6 +113,13 @@ CallbackReturn MultiPriorityController::on_configure(
         R_des_ = quat.toRotationMatrix();
       });
 
+  auto log_publisher = get_node()->create_publisher<std_msgs::msg::Float64MultiArray>(
+      "~/log_state", rclcpp::SystemDefaultsQoS());
+  log_pub_ = std::make_shared<
+      realtime_tools::RealtimePublisher<std_msgs::msg::Float64MultiArray>>(log_publisher);
+  // Pre-allocate so update() never resizes from RT context.
+  log_pub_->msg_.data.assign(7, 0.0);
+
   RCLCPP_INFO(get_node()->get_logger(),
               "Configured. anchor=[%.3f, %.3f, %.3f], T_des=%.1f N",
               anchor_position_.x(), anchor_position_.y(), anchor_position_.z(), desired_tension_);
@@ -136,6 +143,7 @@ CallbackReturn MultiPriorityController::on_activate(
   tau_prev_.setZero();
   gain_ramp_ = 0.0;
   F_ext_offset_.setZero();
+  log_decim_counter_ = 0;
 
   RCLCPP_INFO(get_node()->get_logger(), "Activated — pose will be initialized on first update.");
   return CallbackReturn::SUCCESS;
@@ -152,7 +160,7 @@ CallbackReturn MultiPriorityController::on_deactivate(
 // ──────────────────────────────────────────────────────────────────────────────
 
 controller_interface::return_type MultiPriorityController::update(
-    const rclcpp::Time& /*time*/,
+    const rclcpp::Time& time,
     const rclcpp::Duration& period) {
   updateJointStates();
 
@@ -423,6 +431,22 @@ controller_interface::return_type MultiPriorityController::update(
                        F_ext_offset_.x(), F_ext_offset_.y(), F_ext_offset_.z(),
                        ep.x(), ep.y(), ep.z(),
                        tau(0), tau(1), tau(2), tau(3), tau(4), tau(5), tau(6));
+
+  // ── Diagnostic log publisher (100 Hz, RT-safe) ─────────────────────────────
+  if (++log_decim_counter_ >= kLogDecimation) {
+    log_decim_counter_ = 0;
+    if (log_pub_ && log_pub_->trylock()) {
+      auto& data = log_pub_->msg_.data;
+      data[0] = time.seconds();
+      data[1] = desired_tension_;   // target setpoint (parameter)
+      data[2] = T_des_rt;            // active setpoint (ramped)
+      data[3] = tension_filt_;       // filtered measured tension
+      data[4] = p_ee.x();
+      data[5] = p_ee.y();
+      data[6] = p_ee.z();
+      log_pub_->unlockAndPublish();
+    }
+  }
 
   return controller_interface::return_type::OK;
 }

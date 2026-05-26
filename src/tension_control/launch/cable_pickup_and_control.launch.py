@@ -247,6 +247,14 @@ def generate_launch_description():
         ],
     )
 
+    # ── CSV logger for multi_priority_controller telemetry ─────────────────────
+    tension_csv_logger = Node(
+        package='tension_control',
+        executable='tension_csv_logger.py',
+        name='tension_csv_logger',
+        output='screen',
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('robot_ip', description='Hostname or IP of the robot.'),
         DeclareLaunchArgument('use_fake_hardware', default_value='false'),
@@ -261,4 +269,5 @@ def generate_launch_description():
         camera_publisher_node,
         cable_pose_estimator_cam1,
         orchestrator_node,
+        tension_csv_logger,
     ])
