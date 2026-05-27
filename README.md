@@ -170,3 +170,10 @@ CI runs `colcon build` with clang-tidy (`-DCHECK_TIDY=ON`) then `colcon test` (c
 - [`src/tactile_cameras/README.md`](src/tactile_cameras/README.md) — GelSight camera nodes and launch examples
 - [`cable_pose_estimation_demo.ipynb`](cable_pose_estimation_demo.ipynb) — Jupyter demo of the cable pose estimation pipeline
 - `.claude/docs/architectural_patterns.md` — ros2_control plugin pattern, real-time control loop, multi-priority control math, ML inference pipeline
+
+## Results
+
+- [Frank Research 3: Testing Multi Priority controller limits with tug of war](https://youtu.be/nled1iDKwn8)
+- [Franka Research 3: Cable being gripped](https://youtube.com/shorts/g390GOfP2Ak?feature=share)
+- [Franka Research 3: Multi Priority Controller](https://youtube.com/shorts/DwMnadb-N0o?feature=share)
+- [Franka Research 3: Admittance controller](https://youtube.com/shorts/B2Tznev1DlI?feature=share)
