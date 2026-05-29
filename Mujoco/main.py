@@ -8,8 +8,9 @@ Operation sequence:
   2. TASK:  Robot executes arc trajectory in XY plane while maintaining cable tension.
 
 Usage:
-    python main.py                      # interactive mode (viewer)
-    python main.py --headless 40.0      # headless + plots + CSV
+    python main.py                          # interactive mode (viewer)
+    python main.py --headless 40.0          # headless + plots + CSV
+    python main.py --record 30.0 sim.mp4    # headless + MP4 video
 
 Viewer keys:
     SPACE   — pause / resume
@@ -29,6 +30,8 @@ import math
 import numpy as np
 import mujoco
 import mujoco.viewer
+
+import imageio.v2 as imageio
 
 from multi_priority_controller import MultiPriorityController, get_ee_jacobian, pseudo_inverse
 
@@ -81,6 +84,15 @@ GRASP_NULL_DAMP              = 3.0
 # Logging
 LOG_EVERY_N_STEPS   = 10
 PRINT_EVERY_N_STEPS = 200
+
+# Video recording
+VIDEO_FPS           = 60
+VIDEO_WIDTH         = 1280
+VIDEO_HEIGHT        = 720
+VIDEO_CAM_DISTANCE  = 2.2
+VIDEO_CAM_ELEVATION = -15.0
+VIDEO_CAM_AZIMUTH   = 30.0
+VIDEO_CAM_LOOKAT    = np.array([0.5, 0.0, 0.4])
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +676,98 @@ def run_headless_and_plot(duration: float = 40.0) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Recording mode — headless simulation + MP4 video
+# ---------------------------------------------------------------------------
+
+def run_record(duration: float = 30.0, out_path: str = "sim.mp4") -> None:
+    try:
+        model = mujoco.MjModel.from_xml_path(XML_PATH)
+    except Exception as e:
+        print(f"[ERROR] Could not load '{XML_PATH}': {e}")
+        return
+
+    data = mujoco.MjData(model)
+
+    grasp_sm = GraspStateMachine(model, data)
+    ctrl = MultiPriorityController(
+        cable_length    = CABLE_LENGTH,
+        tension_desired = TENSION_DESIRED,
+        pos_kp          = POS_KP,
+        pos_kd          = POS_KD,
+        null_damping    = NULL_DAMPING,
+        gravity_comp    = True,
+    )
+
+    reset_simulation(model, data, grasp_sm)
+
+    renderer = mujoco.Renderer(model, height=VIDEO_HEIGHT, width=VIDEO_WIDTH)
+    cam = mujoco.MjvCamera()
+    cam.distance  = VIDEO_CAM_DISTANCE
+    cam.elevation = VIDEO_CAM_ELEVATION
+    cam.azimuth   = VIDEO_CAM_AZIMUTH
+    cam.lookat[:] = VIDEO_CAM_LOOKAT
+
+    writer = imageio.get_writer(
+        out_path, fps=VIDEO_FPS, codec="libx264", quality=8,
+        macro_block_size=1,
+    )
+
+    dt             = model.opt.timestep
+    steps          = int(duration / dt)
+    frame_interval = max(1, int(round(1.0 / (VIDEO_FPS * dt))))
+    print_interval = max(1, steps // 20)
+
+    print(f"[REC] {duration}s @ {VIDEO_FPS} fps → '{out_path}'  "
+          f"({steps} sim steps, frame every {frame_interval} steps, "
+          f"{VIDEO_WIDTH}x{VIDEO_HEIGHT})")
+    _print_header()
+
+    arc_start_time: "float | None"      = None
+    traj_center:    "np.ndarray | None" = None
+    n_frames = 0
+
+    for i in range(steps):
+        t = float(data.time)
+
+        if grasp_sm.phase != GraspPhase.TASK:
+            tau, _ = grasp_sm.step(model, data)
+            data.ctrl[:7] = tau
+        else:
+            if arc_start_time is None:
+                arc_start_time = t
+                ee_id_tmp = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector")
+                traj_center = data.site_xpos[ee_id_tmp].copy()
+                print(f"[REC] Trajectory center: {traj_center}  shape={TRAJ_SHAPE}  "
+                      f"plane={TRAJ_PLANE}  r={TRAJ_RADIUS}m")
+            arc_t      = t - arc_start_time
+            target_pos = trajectory_target(arc_t, traj_center)
+
+            tau, info = ctrl.compute(model, data, target_pos)
+            data.ctrl[:7] = tau
+            data.ctrl[7]  = GRIPPER_CLOSE_CTRL
+            update_target_marker(model, data, target_pos)
+
+            if i % print_interval == 0:
+                ee = info["ee_pos"]
+                print(f"  [t={t:.1f}s]  EE: ({ee[0]:.3f}, {ee[1]:.3f}, {ee[2]:.3f}) | "
+                      f"Target: {np.round(target_pos, 3)} | "
+                      f"Tension: {info['tension_estimated']:.1f}N | "
+                      f"Err: {info['pos_error']:.4f}m")
+
+        mujoco.mj_step(model, data)
+
+        if i % frame_interval == 0:
+            renderer.update_scene(data, camera=cam)
+            writer.append_data(renderer.render())
+            n_frames += 1
+
+    writer.close()
+    renderer.close()
+    print(f"[REC] Wrote {n_frames} frames to '{out_path}'  "
+          f"(duration={n_frames/VIDEO_FPS:.1f}s)")
+
+
+# ---------------------------------------------------------------------------
 # Utility
 # ---------------------------------------------------------------------------
 
@@ -690,5 +794,9 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--headless":
         dur = float(sys.argv[2]) if len(sys.argv) > 2 else 40.0
         run_headless_and_plot(dur)
+    elif len(sys.argv) > 1 and sys.argv[1] == "--record":
+        dur = float(sys.argv[2]) if len(sys.argv) > 2 else 30.0
+        out = sys.argv[3] if len(sys.argv) > 3 else "sim.mp4"
+        run_record(dur, out)
     else:
         run_simulation()

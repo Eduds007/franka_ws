@@ -1,5 +1,11 @@
 # Franka Panda + Cable — MuJoCo Environment with MultiPriority Controller
 
+## Demo
+
+[![MuJoCo cable tension demo](https://img.youtube.com/vi/Eb4ri3VTJAs/0.jpg)](https://youtu.be/Eb4ri3VTJAs)
+
+Watch on YouTube: <https://youtu.be/Eb4ri3VTJAs> — circle trajectory in the YZ plane while the multi-priority controller regulates cable tension at 10 N.
+
 ## File structure
 
 ```
